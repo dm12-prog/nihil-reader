@@ -1,0 +1,2 @@
+menu_item:main:Nihil 1. Collect info:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/nihil/collect-info.sh
+menu_item:main:Nihil 2. Run test 1:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/nihil/run-test1.sh

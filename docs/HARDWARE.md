@@ -16,11 +16,11 @@ Board name inside that code: **E80P04**. Diogo's Sage is revision **D00**
 | Screen power chip | Silergy **SY7636**, I2C bus 1 address 0x62, enable pins PH6/PE4/PE3/PE5, power-good PH7 | `.fex` `[sy7636]`; driver `linux-4.9/drivers/hwmon/sy7636.c`, `brandy/u-boot-2014.07/include/power/sy7636.h` |
 | Power manager (battery, regulators) | ROHM **BD71828**, I2C bus 2 address 0x4B | `.fex` `[bd71828-i2c]`; also confirmed live on Diogo's Sage 2026-11-17 |
 | Frontlight | 2x Awinic AW99703, I2C bus 0 and 1, address 0x36, enable pin PL0 | `sun8iw15p1-E80P04-C2.dts`, `&twi0` / `&twi1` |
-| Buttons | Page Up = **PH9**, Page Down = **PH8**, Power = **PL4**, cover magnet (Hall) = **PL9** | `sun8iw15p1-E80P04-C2.dts`, `gpio-keys` |
+| Buttons | On Diogo's D00 (checked live 2026-11-19, `/sys/kernel/debug/gpio`): Page Up = **PL11**, Page Down = **PL5**, cover magnet (Hall) = **PL9**; Power goes through the BD71828 chip, not a GPIO. (The published C2 tree says PH9/PH8/PL4: different board.) | live device; `sun8iw15p1-E80P04-C2.dts` |
 | Storage | eMMC on controller `sdc2` (0x04022000), 8-bit bus | `sun8iw15p1-eink_128m.dtsi` |
 | GPIO controllers | `pio` at 0x0300B000, `r_pio` (port L) at 0x07022000 | `sun8iw15p1-pinctrl.dtsi` |
 | Watchdog (used to reboot) | 0x030090A0, Allwinner A31 style | `sun8iw15p1-eink_128m.dtsi` |
-| E-ink memory | 0x50000000-0x58000000 reserved for screen buffers | `sun8iw15p1-eink_128m.dtsi` `/memreserve/` |
+| RAM size | 512 MB: 0x40000000-0x5FFFFFFF. U-Boot preloads the **waveform** at 0x5FABAA00 (5,526,360 bytes) and hwconfig at 0x5FFFFE00 before Linux starts | live `/proc/cmdline` and `/proc/iomem`, 2026-11-19 |
 
 ## The one closed-source piece, and why it doesn't block us
 

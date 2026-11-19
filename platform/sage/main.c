@@ -1,42 +1,41 @@
 /*
  * Milestone 1, "hello, Sage": the first program that runs with no Linux at all.
  *
- * We can't draw on the screen yet, so the frontlight is our signal lamp:
- *   - on start:                 frontlight blinks 3 times  -> "our code is running"
- *   - press PageUp or PageDown: frontlight toggles         -> "we can read buttons"
- *   - press Power:              device reboots into normal Kobo software
+ * We can't draw on the screen yet, so we use two signals you can see:
+ *   1. on start, the frontlight switches OFF   -> "our code is running"
+ *      (turn the frontlight on before starting the test)
+ *   2. press PageUp or PageDown, the Sage reboots into the normal Kobo
+ *      software                                -> "we can read buttons"
  *
- * Assumptions to confirm on the device (see docs/PLAN.md, milestone 1):
- *   - buttons read 0 when pressed (pull-up, button shorts to ground)
- *   - the frontlight chip keeps the brightness Linux gave it, so toggling its
- *     enable line (PL0) switches the light on/off
+ * The screen keeps showing whatever was there before (e-ink holds its image
+ * without power), so it will look frozen. That is expected.
+ * If nothing happens on a button press: hold Power ~15 s to force a restart.
  */
 #include "sage.h"
 
-static uint32_t port_base(int r_pio, int port)
+static uint32_t port_l_reg(uint32_t offset)
 {
-    return (r_pio ? R_PIO_BASE : PIO_BASE) + (uint32_t)port * 0x24u;
+    return R_PIO_BASE + PORT_L * 0x24u + offset;
 }
 
-static void gpio_mode(int r_pio, int port, int pin, uint32_t mode)
+static void port_l_mode(int pin, uint32_t mode)
 {
-    uint32_t reg = port_base(r_pio, port) + (uint32_t)(pin / 8) * 4u;
+    uint32_t reg = port_l_reg((uint32_t)(pin / 8) * 4u);
     uint32_t shift = (uint32_t)(pin % 8) * 4u;
     REG32(reg) = (REG32(reg) & ~(0xFu << shift)) | (mode << shift);
 }
 
-static int gpio_read(int r_pio, int port, int pin)
+static int port_l_read(int pin)
 {
-    return (REG32(port_base(r_pio, port) + 0x10) >> pin) & 1;
+    return (REG32(port_l_reg(0x10)) >> pin) & 1;
 }
 
-static void gpio_write(int r_pio, int port, int pin, int value)
+static void port_l_write(int pin, int value)
 {
-    uint32_t reg = port_base(r_pio, port) + 0x10;
     if (value)
-        REG32(reg) |= (1u << pin);
+        REG32(port_l_reg(0x10)) |= (1u << pin);
     else
-        REG32(reg) &= ~(1u << pin);
+        REG32(port_l_reg(0x10)) &= ~(1u << pin);
 }
 
 static void delay(volatile uint32_t n)
@@ -45,44 +44,40 @@ static void delay(volatile uint32_t n)
         __asm__ volatile("nop");
 }
 
+/* Same steps as Kobo's own kernel (drivers/watchdog/sunxi_wdt.c, sunxi_wdt_restart). */
 static void reboot(void)
 {
-    REG32(WDT_CFG) = 1;            /* watchdog resets the whole system */
-    REG32(WDT_MODE) = 1;           /* shortest timeout, enable */
-    for (;;)
-        __asm__ volatile("wfi");
-}
-
-static int pressed(int r_pio, int port, int pin)
-{
-    return gpio_read(r_pio, port, pin) == 0;
+    REG32(WDT_CFG) = (REG32(WDT_CFG) & ~0x3u) | 0x1u;        /* reset whole system */
+    REG32(WDT_MODE) = (REG32(WDT_MODE) & ~(0xFu << 4)) | 1u;  /* 0.5 s, enable */
+    REG32(WDT_CTRL) = (1u << 0) | (0x0A57u << 1);             /* start counting */
+    for (;;) {
+        delay(100000);
+        REG32(WDT_MODE) |= 1u;
+    }
 }
 
 int main(void)
 {
     enum { IN = 0, OUT = 1 };
-    int light = 1;
 
-    gpio_mode(1, PORT_L, FRONTLIGHT_EN_PIN, OUT);
-    gpio_mode(0, BTN_PAGEUP_PORT, BTN_PAGEUP_PIN, IN);
-    gpio_mode(0, BTN_PAGEDOWN_PORT, BTN_PAGEDOWN_PIN, IN);
-    gpio_mode(1, PORT_L, BTN_POWER_PIN, IN);
+    /* Signal 1: frontlight off. */
+    port_l_mode(FRONTLIGHT_EN_PIN, OUT);
+    port_l_write(FRONTLIGHT_EN_PIN, 0);
 
-    for (int i = 0; i < 3; i++) {
-        gpio_write(1, PORT_L, FRONTLIGHT_EN_PIN, 0);
-        delay(20000000);
-        gpio_write(1, PORT_L, FRONTLIGHT_EN_PIN, 1);
-        delay(20000000);
-    }
+    /* Buttons are already inputs with pull-ups (set by Linux); make sure. */
+    port_l_mode(BTN_PAGEUP_PIN, IN);
+    port_l_mode(BTN_PAGEDOWN_PIN, IN);
 
+    /* Ignore buttons for ~1-2 s, in case one is still held from the menu tap. */
+    delay(100000000);
+
+    /* Signal 2: any page button -> reboot. Must read "pressed" 3 times in a row. */
+    int hits = 0;
     for (;;) {
-        if (pressed(0, BTN_PAGEUP_PORT, BTN_PAGEUP_PIN) ||
-            pressed(0, BTN_PAGEDOWN_PORT, BTN_PAGEDOWN_PIN)) {
-            light = !light;
-            gpio_write(1, PORT_L, FRONTLIGHT_EN_PIN, light);
-            delay(10000000);       /* crude debounce */
-        }
-        if (pressed(1, PORT_L, BTN_POWER_PIN))
+        int pressed = !port_l_read(BTN_PAGEUP_PIN) || !port_l_read(BTN_PAGEDOWN_PIN);
+        hits = pressed ? hits + 1 : 0;
+        if (hits >= 3)
             reboot();
+        delay(1000000);
     }
 }
