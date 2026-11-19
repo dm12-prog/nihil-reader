@@ -8,8 +8,8 @@ the Kobo's internal storage before milestone 6.
 The Kobo's kernel can't run another kernel directly (`CONFIG_KEXEC` is off in
 Kobo's `sun8iw15p1smp_kobo_defconfig`), but it can load kernel modules. So:
 
-1. Copy `sage.bin` and `vbg_chainload.ko` to the Kobo (USB drive or SSH).
-2. `insmod vbg_chainload.ko` (later: one tap in NickelMenu).
+1. Copy `sage.bin` and `nihil_chainload.ko` to the Kobo (USB drive or SSH).
+2. `insmod nihil_chainload.ko` (later: one tap in NickelMenu).
 3. The module stops 3 of the 4 CPU cores and calls the kernel's own
    `soft_restart()` (what kexec uses internally) to jump into our image.
 4. Linux is gone; our code owns the whole device. Hold Power or let our code

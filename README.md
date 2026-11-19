@@ -1,4 +1,4 @@
-# Vibogenes OS (working name)
+# Nihil
 
 A reading system for the **Kobo Sage** that runs with **no Linux underneath**:
 no Wi-Fi, no touchscreen, just the screen, the page buttons, the frontlight and

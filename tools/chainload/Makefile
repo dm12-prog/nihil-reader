@@ -1,7 +1,7 @@
 # Out-of-tree module build against Kobo's published kernel source
 # (github.com/kobolabs/b300-sage, linux-4.9, sun8iw15p1smp_kobo_defconfig).
 #   make KDIR=/path/to/linux-4.9 CROSS_COMPILE=arm-linux-gnueabihf-
-obj-m := vbg_chainload.o
+obj-m := nihil_chainload.o
 
 KDIR ?= ../../third_party/linux-4.9
 
