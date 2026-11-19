@@ -28,6 +28,10 @@ static char *image = "/mnt/onboard/.adds/nihil/sage.bin";
 module_param(image, charp, 0444);
 MODULE_PARM_DESC(image, "path of the bare-metal image to start");
 
+static int dryrun;
+module_param(dryrun, int, 0444);
+MODULE_PARM_DESC(dryrun, "1 = do every step except the final jump, then fail to load");
+
 static int __init nihil_init(void)
 {
 	void (*soft_restart_fn)(unsigned long);
@@ -73,6 +77,14 @@ static int __init nihil_init(void)
 
 	pr_info("nihil: starting %s (%lld bytes) at phys 0x%lx. Bye, Linux.\n",
 		image, size, (unsigned long)virt_to_phys(buf));
+
+	pr_info("nihil: soft_restart=%p freeze_secondary_cpus=%p first word=%08x magic=%08x\n",
+		soft_restart_fn, freeze_cpus_fn, ((u32 *)buf)[0], ((u32 *)buf)[9]);
+	if (dryrun) {
+		free_pages((unsigned long)buf, order);
+		pr_info("nihil: dry run OK, not jumping\n");
+		return -EAGAIN;
+	}
 
 	freeze_cpus_fn(0);               /* only CPU 0 keeps running */
 	local_irq_disable();

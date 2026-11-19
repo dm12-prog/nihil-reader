@@ -59,6 +59,14 @@ copied:
     isb
     ldr     pc, =relocated          @ jump into the moved copy
 relocated:
+    /* Linux switched the caches off on its way out, which makes everything
+     * ~10-50x slower. The instruction cache is safe to turn back on even with
+     * the MMU off. */
+    mrc     p15, 0, r0, c1, c0, 0   @ SCTLR
+    orr     r0, r0, #(1 << 12)      @ I bit: instruction cache on
+    orr     r0, r0, #(1 << 11)      @ Z bit: branch prediction on
+    mcr     p15, 0, r0, c1, c0, 0
+    isb
     ldr     sp, =_stack_top
 
     ldr     r0, =_bss_start         @ zero the .bss section
