@@ -92,8 +92,24 @@ static int pin_read(int port, int pin) { return (REG32(port_base(port) + 0x10) >
 /* ---------- bit-banged I2C on PH2 (clock) / PH3 (data) = Kobo's "twi1" ---------- */
 static int I2C_PORT = 7, I2C_SCL = 2, I2C_SDA = 3;           /* chosen by i2c_find_pmic() */
 static void i2c_delay(void) { sleep_us(5); }                 /* ~100 kHz */
-static void scl(int hi) { pin_mode(I2C_PORT, I2C_SCL, hi ? 0 : 1); i2c_delay(); }
-static void sda(int hi) { pin_mode(I2C_PORT, I2C_SDA, hi ? 0 : 1); i2c_delay(); }
+/* A line is "high" when we let go of it (pin = input, the board pulls it up)
+ * and "low" when we drive it (pin = output with its data bit 0).
+ * The data bit is cleared every time just before driving: writing any pin of
+ * a port copies the current level of the port's input pins into their data
+ * bits, so a released (high) line would otherwise be driven HIGH later.
+ * That was the bug in the first two tries: the clock line never went low. */
+static void line(int pin, int hi)
+{
+    if (hi) {
+        pin_mode(I2C_PORT, pin, 0);
+    } else {
+        pin_write(I2C_PORT, pin, 0);
+        pin_mode(I2C_PORT, pin, 1);
+    }
+    i2c_delay();
+}
+static void scl(int hi) { line(I2C_SCL, hi); }
+static void sda(int hi) { line(I2C_SDA, hi); }
 static void i2c_init(void)
 {
     /* Released = input (pulled high by the board), driven = output low. */
@@ -162,6 +178,9 @@ static int i2c_find_pmic(void)
         I2C_PORT = bus[b][0]; I2C_SCL = bus[b][1]; I2C_SDA = bus[b][2];
         uint32_t cfg = REG32(port_base(I2C_PORT));           /* remember the pin functions */
         i2c_init();
+        scl(0); int c0 = pin_read(I2C_PORT, I2C_SCL); scl(1);
+        sda(0); int d0 = pin_read(I2C_PORT, I2C_SDA); sda(1);
+        lg(T_PMIC | 0x100u * (b + 1) | 2, (uint32_t)(c0 | d0 << 1));   /* 0 = both lines really go low */
         lg(T_PMIC | 0x100u * (b + 1), (uint32_t)(pin_read(I2C_PORT, I2C_SCL) | pin_read(I2C_PORT, I2C_SDA) << 1));
         uint32_t n = 0;
         for (uint8_t a = 0x08; a < 0x78; a++) {
