@@ -91,6 +91,7 @@
 #define T_TCON  0xE8000000u
 #define T_PWR   0xE9000000u
 #define T_PLAY  0xEA000000u
+#define T_READ  0xEB000000u       /* test 3a: page turns */
 
 /* End codes (bb[4] high half) */
 #define END_REHEARSAL_OK 0x600D0000u

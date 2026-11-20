@@ -1,5 +1,6 @@
 /*
- * Milestone 2, test 2b / 2c: first drawing on the e-ink screen.
+ * Test 3a: a numbered "book" on the e-ink screen, pages turned with the buttons.
+ * (Grew out of milestone 2, tests 2b / 2c: first drawing on the screen.)
  *
  * One program, two modes (chosen by the loader, see "boot parameters"):
  *   drive = 0 (test 2b, rehearsal): do everything EXCEPT switching the panel
@@ -21,6 +22,7 @@
  * Every stage writes a marker to the black box (bb[6]) so a hang is located.
  */
 #include "sage.h"
+#include "draw.h"
 
 /* ---------- time ---------- */
 static uint64_t ticks(void)
@@ -30,7 +32,7 @@ static uint64_t ticks(void)
     return ((uint64_t)hi << 32) | lo;
 }
 static uint64_t t0;
-static uint32_t now_us(void) { return (uint32_t)(ticks() - t0) / 24u; }   /* 24 MHz counter */
+static uint32_t now_us(void) { return (uint32_t)((ticks() - t0) / 24u); }   /* 24 MHz counter; wraps after 71 min, differences stay right */
 static void sleep_us(uint32_t us)
 {
     uint64_t end = ticks() + (uint64_t)us * 24u;
@@ -284,22 +286,6 @@ static void fill_words(volatile uint32_t *d, uint32_t v, uint32_t n)
         *d++ = v;
 }
 
-/* ---------- test picture (8 bits per pixel, 0 = black, 255 = white) ---------- */
-static uint8_t pattern(uint32_t x, uint32_t y)
-{
-    if (x < 40 || y < 40 || x >= PANEL_W - 40 || y >= PANEL_H - 40)
-        return 0x00;                                         /* black frame */
-    if (y >= 500 && y < 940 && x >= 160 && x < 1760)
-        return (uint8_t)(((x - 160) / 100) * 17);            /* 16 grey bars, black -> white */
-    if (y >= 140 && y < 400 && x >= 160 && x < 800)
-        return 0x00;                                         /* solid black block */
-    if (y >= 140 && y < 400 && x >= 1120 && x < 1760)
-        return (((x / 40) ^ (y / 40)) & 1) ? 0x00 : 0xFF;    /* chequerboard */
-    if (y >= 1040 && y < 1300 && x >= 160 && x < 1760)
-        return ((x / 8) & 1) ? 0x00 : 0xFF;                  /* fine stripes */
-    return 0xFF;
-}
-
 /* ---------- EINK engine registers (de_eink.c) ---------- */
 #define EE(off) REG32(EINK_BASE + (off))
 static int ee_wait(uint32_t bit, uint32_t timeout_us)
@@ -335,6 +321,182 @@ static void tcon_off(void)
     REG32(CCU_BASE + 0xB60) = 0;
     REG32(CCU_BASE + 0x040) &= ~(1u << 31);
 }
+
+/* ---------- one screen update: picture at img_cur replaces picture at img_last ---------- */
+static uint32_t g_wf, g_frames, p_drive_;
+static uint32_t img_last = IMG_LAST, img_cur = IMG_CUR;
+
+static void show(int verbose)
+{
+    uint32_t frames = g_frames, ts;
+    wdt_arm(0xB);
+
+    /* index calculation (old picture, new picture -> per-pixel pair) */
+    for (uint32_t p = 0; p < 16; p++)
+        EE(0x040 + (p << 4)) = 0;                             /* all pipes off */
+    EE(0x000) = 0x12;                                         /* 5-bit greys, 16 data lines (as Linux) */
+    EE(0x004) = 1u << 4;                                      /* status flags on */
+    EE(0x004) = (1u << 4) | 3u;                               /* clear old flags */
+    EE(0x00C) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+    EE(0x010) = img_last;  EE(0x014) = PANEL_W;
+    EE(0x018) = img_cur;   EE(0x01C) = PANEL_W;
+    EE(0x024) = 0;
+    EE(0x028) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+    EE(0x020) = IDX_OLD;
+    EE(0x02C) = IDX_NEW;
+    ts = now_us();
+    EE(0x008) = (1u << 8) | 1u;                               /* flash mode GLOBAL, start */
+    int idx_ok = ee_wait(2, 500000);
+    if (verbose || !idx_ok) {
+        lg(T_IDX, (uint32_t)idx_ok); lg(T_IDX | 1, now_us() - ts); lg(T_IDX | 2, EE(0x004));
+        lg(T_IDX | 3, EE(0x024)); lg(T_IDX | 4, EE(0x028));
+    }
+    EE(0x004) = (EE(0x004) & 0x1E);                           /* clear the index flag */
+    if (!idx_ok)
+        finish(END_IDX_TIMEOUT);
+
+    /* decode every frame into its own buffer */
+    uint32_t dec_pitch = ((tm.lbl + tm.lsl + tm.lel) << 2) + (PANEL_W >> 1);
+    uint32_t dec_off = (tm.fbl + tm.fsl) * dec_pitch + ((tm.lbl + tm.lsl) << 2);
+    EE(0x044) = 0;
+    EE(0x048) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+    uint32_t worst = 0;
+    for (uint32_t f = 0; f < frames; f++) {
+        EE(0x04C) = g_wf + 1024u * f;                         /* this frame's 32x32 table */
+        EE(0x040) = 1;
+        EE(0x00C) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+        EE(0x15C) = dec_pitch;
+        EE(0x154) = IDX_NEW;
+        EE(0x158) = WAV_BUF0 + f * WAV_BUF_STEP + dec_off;
+        ts = now_us();
+        EE(0x150) = 1;
+        if (!ee_wait(1, 500000)) {
+            lg(T_DEC | 0xFF, f); lg(T_DEC | 0xFE, EE(0x004));
+            finish(END_DEC_TIMEOUT);
+        }
+        uint32_t d = now_us() - ts;
+        if (d > worst)
+            worst = d;
+        EE(0x004) = (EE(0x004) & 0x1D);                       /* clear the decode flag */
+        wdt_feed();
+    }
+    EE(0x040) = 0;
+    if (verbose) { lg(T_DEC, frames); lg(T_DEC | 1, worst); }
+
+    /* The control bits of every buffer must still equal the template: a
+     * damaged buffer would send wrong signals to the panel. Checked on 3 frames. */
+    for (uint32_t k = 0; k < 3; k++) {
+        uint32_t f = k == 0 ? 0 : k == 1 ? frames / 2 : frames - 1;
+        volatile uint32_t *b = (volatile uint32_t *)(WAV_BUF0 + f * WAV_BUF_STEP);
+        volatile uint32_t *t = (volatile uint32_t *)WAV_TEMPLATE;
+        uint32_t ctl_bad = 0, outside = 0;
+        for (uint32_t i = 0; i < LTL * FTL; i += 7) {
+            uint32_t v = b[i];
+            if ((v & 0xFF) != t[i]) ctl_bad++;
+            if ((v >> 8) && (t[i] & 8)) outside++;            /* data where no pixel is clocked */
+        }
+        if (verbose || ctl_bad) { lg(T_DEC | 0x30 | k, ctl_bad); lg(T_DEC | 0x50 | k, outside); }
+        if (ctl_bad)
+            finish(END_DEC_TIMEOUT);
+        wdt_feed();
+    }
+
+    if (!p_drive_)
+        finish(END_REHEARSAL_OK);
+
+    /* DRIVE: power the panel and play the frames */
+    wdt_arm(6);                                               /* from here: 6 s to finish or reboot */
+    uint32_t hs = tm.lbl + tm.lsl + tm.lel, vs = tm.fbl + tm.fsl + tm.fel;
+    EE(0x404) = 0x80000011;                                   /* EDMA on, 16 data lines */
+    EE(0x400) = 0x80000000;
+    EE(0x408) = WAV_TEMPLATE;                                 /* first: an empty frame (no drive) */
+    EE(0x40C) = (PANEL_W + (hs << 3)) >> 1;
+    EE(0x410) = ((PANEL_H + vs - 1) << 16) | (PANEL_W + (hs << 3) - 1);
+    EE(0x414) = ((tm.fbl + tm.fsl) << 16) | ((tm.lbl + tm.lsl) << 3);
+    EE(0x418) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+    EE(0x404) |= 1;
+    EE(0x400) = 0x80010001;                                   /* "buffer ready" */
+
+    /* timing controller clock + settings (values seen under Linux, test 2a) */
+    REG32(CCU_BASE + 0x040) |= 1u << 31;                      /* video PLL on */
+    sleep_us(20000);                                          /* same wait as the run that worked (2c-1) */
+    REG32(CCU_BASE + 0xB60) = 0x80000000;
+    REG32(CCU_BASE + 0xB7C) = 0x00010000;
+    REG32(CCU_BASE + 0xB7C) = 0x00010001;
+    sleep_us(100);
+    REG32(TCON_BASE + 0x000) = 0;
+    REG32(TCON_BASE + 0x004) = 0;
+    REG32(TCON_BASE + 0x044) = 0xF0000006;
+    REG32(TCON_BASE + 0x048) = 0x014305AA;
+    REG32(TCON_BASE + 0x04C) = 0x014B0001;
+    REG32(TCON_BASE + 0x050) = 0x0B760001;
+    REG32(TCON_BASE + 0x054) = 0x00010001;
+    REG32(TCON_BASE + 0x088) = 0x04000000;
+    REG32(TCON_BASE + 0x08C) = 0;                             /* outputs enabled */
+
+    /* panel power: xon, rails on over I2C, wait for "power good", then VCOM */
+    pin_write(1, 7, 1);                                       /* PB7 xon */
+    int w2 = pmic_write(0x00, 0xE0);
+    ts = now_us();
+    while (!pin_read(7, 7) && now_us() - ts < 200000u)
+        ;
+    uint32_t pg_us = now_us() - ts;
+    if (verbose || !w2 || !pin_read(7, 7)) {
+        lg(T_PWR, (uint32_t)(1 | (w2 << 1) | (pin_read(7, 7) << 2))); lg(T_PWR | 1, pg_us);
+        lg(T_PWR | 2, (uint32_t)pmic_read(0x07));
+    }
+    if (!w2 || !pin_read(7, 7)) {
+        panel_power_off();
+        tcon_off();
+        finish(END_NO_POWER_GOOD);
+    }
+    pin_write(4, 3, 1);                                       /* PE3: VCOM on */
+    sleep_us(10000);
+
+    /* go: pins to the panel, controller on */
+    REG32(PIO_BASE + 3 * 0x24 + 0x0) = 0x22222222;
+    REG32(PIO_BASE + 3 * 0x24 + 0x4) = 0x22222222;
+    REG32(PIO_BASE + 3 * 0x24 + 0x8) = 0x72222222;
+    REG32(TCON_BASE + 0x040) = 0x82000080;
+    REG32(TCON_BASE + 0x000) = 0x80000000;
+
+    /* Play list: 2 empty frames, the real frames, 2 empty frames. A new buffer
+     * is handed over once per scan, when the line counter wraps around. */
+    uint32_t total = frames + 4, shown = 0, prev = 0, wraps_bad = 0;
+    ts = now_us();
+    uint32_t last_wrap = ts;
+    while (shown < total) {
+        uint32_t line = (REG32(TCON_BASE + 0x0FC) >> 16) & 0xFFF;
+        if (line < prev) {                                    /* a new scan just started */
+            shown++;
+            uint32_t next = shown;                            /* buffer for the scan after this one */
+            uint32_t addr = (next >= 2 && next < 2 + frames) ? WAV_BUF0 + (next - 2) * WAV_BUF_STEP : WAV_TEMPLATE;
+            EE(0x408) = addr;
+            EE(0x400) = 0x80010001;
+            uint32_t n = now_us();
+            if (n - last_wrap > 16000u || n - last_wrap < 8000u)
+                wraps_bad++;
+            last_wrap = n;
+        }
+        prev = line;
+        if (now_us() - last_wrap > 100000u)                   /* scanning stopped? bail out */
+            break;
+    }
+    REG32(TCON_BASE + 0x040) = 0;                             /* stop clocking the panel */
+    uint32_t play_us = now_us() - ts;
+    int pg_end = pin_read(7, 7);
+    sleep_us(20000);
+    panel_power_off();
+    EE(0x404) &= ~1u;                                         /* frame feeder off */
+    tcon_off();
+    lg(T_PLAY, shown); lg(T_PLAY | 1, play_us); lg(T_PLAY | 2, wraps_bad); lg(T_PLAY | 4, (uint32_t)pg_end);
+    if (shown != total || !pg_end)
+        finish(END_PLAY_ABORT);
+    wdt_arm(0xB);
+
+    uint32_t t = img_last; img_last = img_cur; img_cur = t;   /* the new picture is now "what is on screen" */
+}
+
 
 __attribute__((noreturn)) int main(void)
 {
@@ -429,20 +591,11 @@ __attribute__((noreturn)) int main(void)
     lg(T_MMU, REG32(IOMMU_BASE + 0x20)); lg(T_MMU | 1, REG32(IOMMU_BASE + 0x30));
     REG32(IOMMU_BASE + 0x30) = 0x7F;                          /* every master: real addresses */
     lg(T_MMU | 2, REG32(IOMMU_BASE + 0x30));
-
-    volatile uint8_t *last = (volatile uint8_t *)IMG_LAST, *cur = (volatile uint8_t *)IMG_CUR;
     fill_words((volatile uint32_t *)IMG_LAST, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);   /* "screen is white" */
-    (void)last;
-    for (uint32_t y = 0; y < PANEL_H; y++) {
-        for (uint32_t x = 0; x < PANEL_W; x++)
-            cur[y * PANEL_W + x] = pattern(x, y);
-        if ((y & 0xFF) == 0)
-            wdt_feed();
-    }
     fill_words((volatile uint32_t *)IDX_OLD, 0, PANEL_W * PANEL_H * 2 / 4);
     fill_words((volatile uint32_t *)IDX_NEW, 0, PANEL_W * PANEL_H * 2 / 4);
 
-    /* --- 4. control-signal template + one copy per frame --- */
+    /* --- 4. control-signal template + one copy per frame (done once) --- */
     stage(4);
     build_template((volatile uint32_t *)WAV_TEMPLATE);
     stage(5);
@@ -451,94 +604,14 @@ __attribute__((noreturn)) int main(void)
         wdt_feed();
     }
 
-    /* --- 5. index calculation (old picture, new picture -> per-pixel pair) --- */
+    /* --- 5. power chip: same settings as Linux, verified, before any drawing --- */
     stage(6);
-    for (uint32_t p = 0; p < 16; p++)
-        EE(0x040 + (p << 4)) = 0;                             /* all pipes off */
-    EE(0x000) = 0x12;                                         /* 5-bit greys, 16 data lines (as Linux) */
-    EE(0x004) = 1u << 4;                                      /* status flags on */
-    EE(0x004) = (1u << 4) | 3u;                               /* clear old flags */
-    EE(0x00C) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
-    EE(0x010) = IMG_LAST;  EE(0x014) = PANEL_W;
-    EE(0x018) = IMG_CUR;   EE(0x01C) = PANEL_W;
-    EE(0x024) = 0;
-    EE(0x028) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
-    EE(0x020) = IDX_OLD;
-    EE(0x02C) = IDX_NEW;
-    uint32_t ts = now_us();
-    EE(0x008) = (1u << 8) | 1u;                               /* flash mode GLOBAL, start */
-    int idx_ok = ee_wait(2, 500000);
-    lg(T_IDX, (uint32_t)idx_ok); lg(T_IDX | 1, now_us() - ts); lg(T_IDX | 2, EE(0x004));
-    lg(T_IDX | 3, EE(0x024)); lg(T_IDX | 4, EE(0x028));
-    EE(0x004) = (EE(0x004) & 0x1E);                           /* clear the index flag */
-    volatile uint16_t *ix = (volatile uint16_t *)IDX_NEW;
-    lg(T_IDX | 5, ix[0]);                                     /* corner: black on white */
-    lg(T_IDX | 6, ix[700 * PANEL_W + 900]);                   /* a grey bar */
-    lg(T_IDX | 7, ix[100 * PANEL_W + 960]);                   /* white stays white */
-    if (!idx_ok)
-        finish(END_IDX_TIMEOUT);
-
-    /* --- 6. decode every frame into its own buffer --- */
-    stage(7);
-    uint32_t dec_pitch = ((tm.lbl + tm.lsl + tm.lel) << 2) + (PANEL_W >> 1);
-    uint32_t dec_off = (tm.fbl + tm.fsl) * dec_pitch + ((tm.lbl + tm.lsl) << 2);
-    EE(0x044) = 0;
-    EE(0x048) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
-    uint32_t worst = 0;
-    for (uint32_t f = 0; f < frames; f++) {
-        EE(0x04C) = wf + 1024u * f;                           /* this frame's 32x32 table */
-        EE(0x040) = 1;
-        EE(0x00C) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
-        EE(0x15C) = dec_pitch;
-        EE(0x154) = IDX_NEW;
-        EE(0x158) = WAV_BUF0 + f * WAV_BUF_STEP + dec_off;
-        ts = now_us();
-        EE(0x150) = 1;
-        if (!ee_wait(1, 500000)) {
-            lg(T_DEC | 0xFF, f); lg(T_DEC | 0xFE, EE(0x004));
-            finish(END_DEC_TIMEOUT);
-        }
-        uint32_t d = now_us() - ts;
-        if (d > worst)
-            worst = d;
-        EE(0x004) = (EE(0x004) & 0x1D);                       /* clear the decode flag */
-        wdt_feed();
-    }
-    EE(0x040) = 0;
-    lg(T_DEC, frames); lg(T_DEC | 1, worst);
-
-    /* What did the decoder write? Sample 3 frames: data bits used, control bits intact. */
-    for (uint32_t k = 0; k < 3; k++) {
-        uint32_t f = k == 0 ? 0 : k == 1 ? frames / 2 : frames - 1;
-        volatile uint32_t *b = (volatile uint32_t *)(WAV_BUF0 + f * WAV_BUF_STEP);
-        volatile uint32_t *t = (volatile uint32_t *)WAV_TEMPLATE;
-        uint32_t nz = 0, ctl_bad = 0, sum = 0, outside = 0;
-        for (uint32_t i = 0; i < LTL * FTL; i += 5) {
-            uint32_t v = b[i];
-            if (v >> 8) nz++;
-            if ((v & 0xFF) != t[i]) ctl_bad++;
-            sum += v;
-            if ((v >> 8) && (t[i] & 8)) outside++;            /* data where no pixel is clocked */
-        }
-        lg(T_DEC | 0x10 | k, f); lg(T_DEC | 0x20 | k, nz); lg(T_DEC | 0x30 | k, ctl_bad);
-        lg(T_DEC | 0x40 | k, sum); lg(T_DEC | 0x50 | k, outside);
-        /* one data word from the black block, the white area and a grey bar */
-        uint32_t row = tm.fsl + tm.fbl, col = tm.lsl + tm.lbl;
-        lg(T_DEC | 0x60 | k, b[(row + 200) * LTL + col + 300 / 8]);
-        lg(T_DEC | 0x70 | k, b[(row + 100) * LTL + col + 960 / 8]);
-        lg(T_DEC | 0x80 | k, b[(row + 700) * LTL + col + 900 / 8]);
-        wdt_feed();
-    }
-
-    if (!p_drive)
-        finish(END_REHEARSAL_OK);
-    if (pmic_bus < 0)
-        finish(END_NO_PMIC);
-    if (!p_pm1 || !p_pm2)
-        finish(END_BAD_PARAMS);                               /* never power the panel with guessed voltages */
-    /* Program the power chip exactly as Linux had it (VCOM is calibrated per
-     * panel at the factory), read everything back, and stop if one bit differs. */
-    {
+    g_wf = wf; g_frames = frames; p_drive_ = p_drive;
+    if (p_drive) {
+        if (pmic_bus < 0)
+            finish(END_NO_PMIC);
+        if (!p_pm1 || !p_pm2)
+            finish(END_BAD_PARAMS);                           /* never power the panel with guessed voltages */
         static const uint8_t r[6] = { 1, 2, 3, 5, 6, 4 };
         uint8_t v[6] = { (uint8_t)p_pm1, (uint8_t)(p_pm1 >> 8), (uint8_t)(p_pm1 >> 16),
                          (uint8_t)p_pm2, (uint8_t)(p_pm2 >> 8), 0 };
@@ -553,105 +626,57 @@ __attribute__((noreturn)) int main(void)
             finish(END_PMIC_VERIFY);
     }
 
-    /* --- 7. DRIVE: power the panel and play the frames --- */
+    /* --- 6. test 3a: a "book" of numbered pages, turned with the page buttons --- */
+    stage(7);
+    uint32_t page = 1, turns = 0;
+    uint32_t tr = now_us();
+    fill_words((volatile uint32_t *)img_cur, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);
+    draw_page((volatile uint8_t *)img_cur, PANEL_W, PANEL_H, page);
+    lg(T_READ, now_us() - tr);                                /* time to paint one page */
+    show(1);
     stage(8);
-    wdt_arm(6);                                               /* from here: 6 s to finish or reboot */
-    /* frame feeder: data clocked out of RAM by the EDMA */
-    uint32_t hs = tm.lbl + tm.lsl + tm.lel, vs = tm.fbl + tm.fsl + tm.fel;
-    EE(0x404) = 0x80000011;                                   /* EDMA on, 16 data lines */
-    EE(0x400) = 0x80000000;
-    EE(0x408) = WAV_TEMPLATE;                                 /* first: an empty frame (no drive) */
-    EE(0x40C) = (PANEL_W + (hs << 3)) >> 1;
-    EE(0x410) = ((PANEL_H + vs - 1) << 16) | (PANEL_W + (hs << 3) - 1);
-    EE(0x414) = ((tm.fbl + tm.fsl) << 16) | ((tm.lbl + tm.lsl) << 3);
-    EE(0x418) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
-    EE(0x404) |= 1;
-    EE(0x400) = 0x80010001;                                   /* "buffer ready" */
 
-    /* timing controller clock + pins + settings (values seen under Linux, test 2a) */
-    REG32(CCU_BASE + 0x040) |= 1u << 31;                      /* video PLL on */
-    ts = now_us();
-    while (!(REG32(CCU_BASE + 0x040) & (1u << 28)) && now_us() - ts < 20000u)
-        ;
-    lg(T_TCON, REG32(CCU_BASE + 0x040)); lg(T_TCON | 1, now_us() - ts);
-    REG32(CCU_BASE + 0xB60) = 0x80000000;
-    REG32(CCU_BASE + 0xB7C) = 0x00010000;
-    REG32(CCU_BASE + 0xB7C) = 0x00010001;
-    sleep_us(100);
-    REG32(TCON_BASE + 0x000) = 0;
-    REG32(TCON_BASE + 0x004) = 0;
-    REG32(TCON_BASE + 0x044) = 0xF0000006;
-    REG32(TCON_BASE + 0x048) = 0x014305AA;
-    REG32(TCON_BASE + 0x04C) = 0x014B0001;
-    REG32(TCON_BASE + 0x050) = 0x0B760001;
-    REG32(TCON_BASE + 0x054) = 0x00010001;
-    REG32(TCON_BASE + 0x088) = 0x04000000;
-    REG32(TCON_BASE + 0x08C) = 0;                             /* outputs enabled */
-
-    /* panel power: xon, rails on over I2C, wait for "power good", then VCOM */
-    stage(9);
-    pin_write(1, 7, 1);                                       /* PB7 xon */
-    int w1 = 1, w2 = pmic_write(0x00, 0xE0);
-    ts = now_us();
-    while (!pin_read(7, 7) && now_us() - ts < 200000u)
-        ;
-    uint32_t pg_us = now_us() - ts;
-    lg(T_PWR, (uint32_t)(w1 | (w2 << 1) | (pin_read(7, 7) << 2))); lg(T_PWR | 1, pg_us);
-    lg(T_PWR | 2, (uint32_t)pmic_read(0x07));
-    if (!w1 || !w2 || !pin_read(7, 7)) {
-        panel_power_off();
-        tcon_off();
-        finish(END_NO_POWER_GOOD);
-    }
-    pin_write(4, 3, 1);                                       /* PE3: VCOM on */
-    sleep_us(10000);
-
-    /* go: pins to the panel, controller on */
-    stage(10);
-    REG32(PIO_BASE + 3 * 0x24 + 0x0) = 0x22222222;
-    REG32(PIO_BASE + 3 * 0x24 + 0x4) = 0x22222222;
-    REG32(PIO_BASE + 3 * 0x24 + 0x8) = 0x72222222;
-    REG32(TCON_BASE + 0x040) = 0x82000080;
-    REG32(TCON_BASE + 0x000) = 0x80000000;
-
-    /* Play list: 2 empty frames, the real frames, 2 empty frames. A new buffer
-     * is handed over once per scan, when the line counter wraps around. */
-    uint32_t total = frames + 4, shown = 0, prev = 0, wraps_bad = 0, maxline = 0;
-    ts = now_us();
-    uint32_t last_wrap = ts;
-    while (shown < total) {
-        uint32_t line = (REG32(TCON_BASE + 0x0FC) >> 16) & 0xFFF;
-        if (line > maxline)
-            maxline = line;
-        if (line < prev) {                                    /* a new scan just started */
-            shown++;
-            uint32_t next = shown;                            /* buffer for the scan after this one */
-            uint32_t addr = (next >= 2 && next < 2 + frames) ? WAV_BUF0 + (next - 2) * WAV_BUF_STEP : WAV_TEMPLATE;
-            EE(0x408) = addr;
-            EE(0x400) = 0x80010001;
-            uint32_t n = now_us();
-            if (n - last_wrap > 16000u || n - last_wrap < 8000u)
-                wraps_bad++;
-            last_wrap = n;
-        }
-        prev = line;
-        if (now_us() - last_wrap > 100000u) {                 /* scanning stopped? bail out */
-            lg(T_PLAY | 0xFF, shown);
+    uint64_t idle_from = ticks();
+    for (;;) {
+        wdt_feed();
+        uint32_t l = REG32(R_PIO_BASE + 0x10);
+        int down = !((l >> BTN_PAGEDOWN_PIN) & 1), up = !((l >> BTN_PAGEUP_PIN) & 1);
+        if ((ticks() - idle_from) / 24000000u >= 120u) {      /* 2 minutes without a press: leave */
+            lg(T_READ | 2, turns);
             break;
         }
+        if (!down && !up)
+            continue;
+        sleep_us(40000);                                      /* still pressed after 40 ms = a real press */
+        l = REG32(R_PIO_BASE + 0x10);
+        int down2 = !((l >> BTN_PAGEDOWN_PIN) & 1), up2 = !((l >> BTN_PAGEUP_PIN) & 1);
+        if (down2 && up2) {                                   /* both buttons: leave */
+            lg(T_READ | 3, turns);
+            break;
+        }
+        if (down != down2 || up != up2)
+            continue;
+        if (down)
+            page++;
+        else if (page > 1)
+            page--;
+        turns++;
+        tr = now_us();
+        fill_words((volatile uint32_t *)img_cur, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);
+        draw_page((volatile uint8_t *)img_cur, PANEL_W, PANEL_H, page);
+        show(0);
+        lg(T_READ | 0x10 | (uint32_t)(down ? 0 : 1), (page << 16) | ((now_us() - tr) / 1000u));   /* page, ms for the whole turn */
+        /* wait for the button to be let go (or both pressed -> handled next round) */
+        uint64_t w = ticks();
+        while ((ticks() - w) / 24000u < 3000u) {
+            l = REG32(R_PIO_BASE + 0x10);
+            int d3 = !((l >> BTN_PAGEDOWN_PIN) & 1), u3 = !((l >> BTN_PAGEUP_PIN) & 1);
+            if ((!d3 && !u3) || (d3 && u3))
+                break;
+            wdt_feed();
+        }
+        idle_from = ticks();
     }
-    REG32(TCON_BASE + 0x040) = 0;                             /* stop clocking the panel */
-    lg(T_PLAY, shown); lg(T_PLAY | 1, now_us() - ts); lg(T_PLAY | 2, wraps_bad); lg(T_PLAY | 3, maxline);
-    lg(T_PLAY | 4, (uint32_t)pin_read(7, 7)); lg(T_PLAY | 5, (uint32_t)pmic_read(0x07));
-
-    stage(11);
-    sleep_us(20000);
-    panel_power_off();
-    tcon_off();
-    lg(T_PWR | 0x11, (uint32_t)pmic_read(0x00));
-    stage(12);
-    /* Leave the picture on screen for 4 s so it can be looked at, then reboot. */
-    wdt_arm(0xB);
-    sleep_us(4000000);
-    finish(shown == total ? END_DRAWN_OK : END_PLAY_ABORT);
+    stage(9);
+    finish(END_DRAWN_OK);
 }
