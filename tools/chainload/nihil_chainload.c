@@ -46,6 +46,10 @@ static int findtiming;
 module_param(findtiming, int, 0444);
 MODULE_PARM_DESC(findtiming, "1 = find the screen timing the running kernel really uses (read-only memory search), print it, then fail to load");
 
+static int pmicdump;
+module_param(pmicdump, int, 0444);
+MODULE_PARM_DESC(pmicdump, "1 = read the screen power chip's registers (SY7636, i2c-1 0x62) for ~3 s, print them, then fail to load");
+
 static int regdump;
 module_param(regdump, int, 0444);
 MODULE_PARM_DESC(regdump, "1 = watch the screen hardware registers for ~4 s from inside Linux (read-only), print them, then fail to load");
@@ -287,6 +291,42 @@ static int nihil_findtiming(void)
 	return -EAGAIN;
 }
 
+/*
+ * pmicdump: what does Linux really program into the screen power chip?
+ * Reads registers 0..8 through the kernel's own I2C layer (so it queues
+ * politely behind Kobo's driver), every 50 ms for 3 s, printing changes.
+ */
+static int nihil_pmicdump(void)
+{
+	void *(*get_adap)(int nr) = (void *)kallsyms_lookup_name("i2c_get_adapter");
+	s32 (*xfer)(void *adap, u16 addr, unsigned short flags, char read_write, u8 command, int size, void *data) =
+		(void *)kallsyms_lookup_name("i2c_smbus_xfer");
+	void *adap;
+	u8 last[9], now[9];
+	u8 data[34];
+	int t, r, first = 1;
+
+	if (!get_adap || !xfer || !(adap = get_adap(1))) {
+		pr_err("nihil-pm: i2c helpers not found\n");
+		return -ENOENT;
+	}
+	for (t = 0; t < 60; t++) {
+		for (r = 0; r < 9; r++) {
+			s32 e = xfer(adap, 0x62, 0, 1 /* read */, r, 2 /* byte data */, data);
+			now[r] = e < 0 ? 0xEE : data[0];
+		}
+		if (first || memcmp(now, last, 9)) {
+			pr_info("nihil-pm: t=%d regs0-8: %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", t * 50,
+				now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8]);
+			memcpy(last, now, 9);
+			first = 0;
+		}
+		usleep_range(45000, 55000);
+	}
+	pr_info("nihil-pm: done\n");
+	return -EAGAIN;           /* adapter reference is kept: harmless, the module never stays loaded */
+}
+
 static int __init nihil_init(void)
 {
 	void (*soft_restart_fn)(unsigned long);
@@ -303,6 +343,8 @@ static int __init nihil_init(void)
 		return nihil_regdump();
 	if (findtiming)
 		return nihil_findtiming();
+	if (pmicdump)
+		return nihil_pmicdump();
 
 	soft_restart_fn = (void *)kallsyms_lookup_name("soft_restart");
 	freeze_cpus_fn = (void *)kallsyms_lookup_name("freeze_secondary_cpus");

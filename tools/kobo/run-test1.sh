@@ -9,6 +9,16 @@ exec > "$D/run.log" 2>&1
 date
 md5sum "$D/sage.bin" "$D/nihil_chainload.ko"
 
+# Screen power chip: its registers as Linux sets them, sampled for 3 s while
+# the screen is still refreshing from the menu tap. Read-only.
+insmod "$D/nihil_chainload.ko" pmicdump=1
+dmesg | grep "nihil-pm"
+for k in vldo vpdd vddh_ext vpdd_len vp_ext vee_ext sy7636_on_delay1 sy7636_on_delay2 sy7636_on_delay3 sy7636_on_delay4; do
+  f=$(find /proc/device-tree/ -name "$k" 2>/dev/null | head -1)
+  echo "device tree $k: $(hexdump -C "$f" 2>/dev/null | head -1)"
+done
+dmesg | grep -i -E "vcom|sy7636_regs|papyrus" | grep -v "pwr req" | tail -15
+
 # Panel timing from the live device tree (big-endian 32-bit numbers).
 dt() {
   # /proc/device-tree is a symbolic link: the trailing slash makes find go inside it
