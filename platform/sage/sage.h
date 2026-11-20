@@ -46,3 +46,11 @@
 #define BLACKBOX_EVENTS      40            /* first event word */
 #define BLACKBOX_MAX_EVENTS  200
 #define BLACKBOX_WORDS       (BLACKBOX_EVENTS + BLACKBOX_MAX_EVENTS * 11)
+#define BLACKBOX_MAX_PAIRS   1000          /* format 3: (address, value) pairs */
+
+/* Screen hardware (sun8iw15p1.dtsi "disp@01000000", clk-sun8iw15.h) */
+#define CCU_BASE    0x03001000u   /* clock controller */
+#define EINK_BASE   0x01400000u   /* EINK engine + EDMA (de_eink.c) */
+#define TCON_BASE   0x06511000u   /* timing controller tcon_lcd0 */
+#define DISP_TOP    0x06510000u
+#define IOMMU_BASE  0x030F0000u
