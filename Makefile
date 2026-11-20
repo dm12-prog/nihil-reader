@@ -38,3 +38,10 @@ mmc-test:
 	@mkdir -p build
 	cc -O2 -Wall -Wextra tools/sim/mmc_test.c -o build/mmc_test
 .PHONY: mmc-test
+
+# PC test of the Sage frontlight code with a real Kobo table file:
+#   make light-test && build/light_test ntxfw-E80P04-B1.bin
+light-test:
+	@mkdir -p build
+	cc -O2 -Wall -Wextra tools/sim/light_test.c -o build/light_test
+.PHONY: light-test

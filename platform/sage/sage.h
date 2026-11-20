@@ -68,6 +68,11 @@
 /* AWF waveform file preloaded by U-Boot (live /proc/cmdline waveform_p=, 2026-11-19) */
 #define WAVEFORM_PHYS 0x5FABAA00u
 
+/* Kobo's "ntxfw" block (frontlight table), loaded by U-Boot just before the
+ * waveform (live /proc/cmdline + /proc/iomem, 2026-11-19): 0x5FAB7C00..0x5FABA9FF */
+#define NTXFW_PHYS 0x5FAB7C00u
+#define NTXFW_MAX  (WAVEFORM_PHYS - NTXFW_PHYS)
+
 /* Boot parameters: the loader module writes them just above the black box. */
 #define PARAMS_PHYS  (BLACKBOX_PHYS + 0x8000u)
 #define PARAMS_MAGIC 0x4E50524Du  /* "NPRM" */
@@ -107,7 +112,7 @@
 #define T_PWR   0xE9000000u
 #define T_PLAY  0xEA000000u
 #define T_READ  0xEB000000u       /* test 3a: page turns */
-/* 0xEC000000 = storage, see mmc.h */
+/* 0xEC000000 = storage, see mmc.h; 0xED000000 = frontlight, see light.h */
 
 /* End codes (bb[4] high half) */
 #define END_REHEARSAL_OK 0x600D0000u

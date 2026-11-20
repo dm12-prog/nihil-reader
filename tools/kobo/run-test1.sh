@@ -4,6 +4,7 @@
 DRIVE=1
 ROT=1           # page direction on the panel: 1 or 3 = portrait (one of them is upside down), 0 = landscape
 MODE=1          # 1 = GC16 (full 16-grey update), 3 = DU (fast black/white)
+LIGHT=1         # 1 = Nihil drives the frontlight (menu: Light, Warmth), 0 = it leaves the light chips alone
 STORE=1         # 1 = Nihil reads the book library straight from the Kobo's storage chip (read-only), 0 = only the one book handed over in RAM
 D=/mnt/onboard/.adds/nihil
 mkdir /tmp/nihil.lock 2>/dev/null || exit 0     # a double tap must not start two runs
@@ -79,7 +80,7 @@ elif [ "$PMN" = 0 ] && [ -s "$D/pmic.cfg" ]; then
   echo "no rails-on sample this time: using remembered settings"
 fi
 echo "power chip settings: distinct=$PMN -> $PM1,$PM2 (vcom reg=$1 $2)"
-ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE}"
+ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE},${LIGHT}"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20
@@ -99,6 +100,13 @@ if ! dmesg | grep -q "nihil: dry run OK"; then
   echo "DRY RUN FAILED: not starting Nihil"; rmdir /tmp/nihil.lock; sync; exit 1
 fi
 # Storage facts as Linux sees them (read-only), to compare with what Nihil logs.
+echo "--- frontlight as Linux sees it ---"
+grep -o "ntxfw[^ ]*" /proc/cmdline
+for f in /sys/class/leds/aw99703-bl_FL*/color /sys/class/leds/aw99703-bl_FL*/brightness /sys/class/backlight/mxc_msp430.0/brightness /sys/class/backlight/mxc_msp430.0/actual_brightness; do
+  echo "$f: $(cat $f 2>&1)"
+done
+dmesg | grep "AW99703" | tail -3
+grep -n -A6 "aw99703" /mnt/onboard/.adds/koreader/frontend/device/kobo/device.lua 2>/dev/null | grep -E "nl_|mixer" | head -8
 echo "--- storage as Linux sees it ---"
 cat /proc/partitions
 mount | grep -E "onboard|mmcblk"

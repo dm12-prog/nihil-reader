@@ -557,9 +557,61 @@ static int hal_read_file(const char *path, uint8_t *buf, uint32_t max, uint32_t 
     *len = g_book_len;
     return 0;
 }
+/* ---------- frontlight: two AW99703 chips (light.h) ----------
+ * Chip 0 = "FL1" on twi0 (PH0 clock, PH1 data), chip 1 = "FL2" on twi1 (PH2,
+ * PH3), both at address 0x36 (Kobo board file sun8iw15p1-E80P04-C2.dts). */
+#define AW99703_ADDR 0x36
+static const uint8_t light_bus[2][3] = { {7, 0, 1}, {7, 2, 3} };   /* port, clock pin, data pin */
+static int light_rd(int chip, uint8_t reg)
+{
+    int sp = I2C_PORT, sc = I2C_SCL, sd = I2C_SDA, v = -1;
+    I2C_PORT = light_bus[chip][0]; I2C_SCL = light_bus[chip][1]; I2C_SDA = light_bus[chip][2];
+    i2c_start();
+    if (i2c_tx(AW99703_ADDR << 1) && i2c_tx(reg)) {
+        i2c_start();
+        if (i2c_tx((AW99703_ADDR << 1) | 1)) v = i2c_rx_last();
+    }
+    i2c_stop();
+    I2C_PORT = sp; I2C_SCL = sc; I2C_SDA = sd;
+    return v;
+}
+static int light_wr(int chip, uint8_t reg, uint8_t val)
+{
+    int sp = I2C_PORT, sc = I2C_SCL, sd = I2C_SDA;
+    I2C_PORT = light_bus[chip][0]; I2C_SCL = light_bus[chip][1]; I2C_SDA = light_bus[chip][2];
+    i2c_start();
+    int ok = i2c_tx(AW99703_ADDR << 1) && i2c_tx(reg) && i2c_tx(val);
+    i2c_stop();
+    I2C_PORT = sp; I2C_SCL = sc; I2C_SDA = sd;
+    return ok;
+}
+static void light_log(uint32_t tag, uint32_t v) { lg(tag, v); }
+#include "light.h"
+static struct light g_light;
+static int g_light_ready;                                     /* 1 = table found and both chips answer */
+static void light_start(void)
+{
+    int r = light_parse(&g_light, (const uint8_t *)NTXFW_PHYS, NTXFW_MAX);
+    lg(T_LIGHT | 0x20, r ? (uint32_t)r : g_light.colors);
+    if (r) return;
+    lg(T_LIGHT | 0x21, (uint32_t)(uintptr_t)g_light.tab);
+    for (int c = 0; c < 2; c++) {                             /* take the two pin pairs for bit-banged I2C */
+        int sp = I2C_PORT, sc = I2C_SCL, sd = I2C_SDA;
+        I2C_PORT = light_bus[c][0]; I2C_SCL = light_bus[c][1]; I2C_SDA = light_bus[c][2];
+        i2c_init();
+        I2C_PORT = sp; I2C_SCL = sc; I2C_SDA = sd;
+    }
+    g_light_ready = light_probe(&g_light) == 0;
+}
 static void hal_set_light(uint32_t brightness, uint32_t warmth)
 {
-    lg(T_READ | 0x30, (brightness << 8) | warmth);            /* the light driver comes later */
+    lg(T_READ | 0x30, (brightness << 8) | warmth);
+    if (!g_light_ready) return;
+    /* Warmth 0..100 -> Kobo's colour sheets T0..T10. Which end is the warm one
+     * is to be confirmed on the device (first light test). */
+    uint32_t color = warmth * (g_light.colors - 1) / 100u;
+    light_set(&g_light, brightness, color);
+    wdt_feed();
 }
 static void hal_busy(void) { wdt_feed(); }
 
@@ -587,6 +639,7 @@ __attribute__((noreturn)) int main(void)
     p_pm2 = pr[1] >= 15 ? pr[16] : 0;                         /* VEE_VP_EXT | PWRON_DLY<<8 */
     uint32_t p_rot = pr[1] >= 16 ? pr[17] & 3u : 0;           /* how the page sits on the panel */
     uint32_t p_store = pr[1] >= 17 ? pr[18] : 0;              /* 1 = read books from the Kobo's storage */
+    uint32_t p_light = pr[1] >= 18 ? pr[19] : 0;              /* 1 = drive the frontlight chips */
     /* The book (plain text) sits somewhere in what was Linux's memory: move it
      * to our own corner before we start using RAM for pictures. */
     uint32_t book_src = pr[32], book_len = pr[33];
@@ -600,7 +653,7 @@ __attribute__((noreturn)) int main(void)
         else
             for (uint32_t i = book_len; i-- > 0;) { d[i] = sr[i]; if (!(i & 0xFFFF)) wdt_feed(); }
     }
-    for (int i = 2; i < 19; i++)
+    for (int i = 2; i < 20; i++)
         lg(T_PARAM | (uint32_t)i, pr[i]);
     pr[0] = 0;                                                /* one-shot */
     LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
@@ -723,6 +776,10 @@ __attribute__((noreturn)) int main(void)
         }
         lg(T_MMC | 0x40, (uint32_t)r);                        /* 0 = storage usable */
         lg(T_MMC | 0x44, now_us() - ts);
+    }
+    if (p_light) {
+        light_start();
+        if (g_light_ready) light_set(&g_light, 0, 0);         /* start dark; the menu switches it on */
     }
     static struct app app;
     struct app_mem mem = { (uint8_t *)APP_FILE, APP_FILE_MAX, (uint8_t *)APP_WORK, APP_WORK_MAX,
