@@ -32,6 +32,48 @@ static int dryrun;
 module_param(dryrun, int, 0444);
 MODULE_PARM_DESC(dryrun, "1 = do every step except the final jump, then fail to load");
 
+static int readlog;
+module_param(readlog, int, 0444);
+MODULE_PARM_DESC(readlog, "1 = print Nihil's black box (RAM at 0x5FA00000) to the kernel log, then fail to load");
+
+#define BB_PHYS   0x5FA00000UL
+#define BB_MAGIC  0x4E49484CU
+#define BB_EVENTS 32
+#define BB_MAX    300
+
+static int nihil_readlog(void)
+{
+	u32 __iomem *bb = ioremap(BB_PHYS, 4096 + BB_MAX * 12);
+	u32 i, n;
+
+	if (!bb) {
+		pr_err("nihil-bb: ioremap failed\n");
+		return -ENOMEM;
+	}
+	pr_info("nihil-bb: magic=%08x version=%u cntfrq=%u events=%u end=%08x\n",
+		readl(bb + 0), readl(bb + 1), readl(bb + 2), readl(bb + 3), readl(bb + 4));
+	if (readl(bb + 0) != BB_MAGIC) {
+		pr_info("nihil-bb: no valid log (RAM was cleared, or Nihil never got that far)\n");
+		pr_info("nihil-bb: first words %08x %08x %08x %08x\n",
+			readl(bb + 0), readl(bb + 1), readl(bb + 2), readl(bb + 3));
+	}
+	for (i = 8; i < 24; i += 8)
+		pr_info("nihil-bb: %s L.cfg0=%08x L.cfg1=%08x L.data=%08x L.pull=%08x H.cfg0=%08x H.cfg1=%08x H.data=%08x H.pull=%08x\n",
+			i == 8 ? "before" : "after ",
+			readl(bb + i), readl(bb + i + 1), readl(bb + i + 2), readl(bb + i + 3),
+			readl(bb + i + 4), readl(bb + i + 5), readl(bb + i + 6), readl(bb + i + 7));
+	n = readl(bb + 3);
+	if (n > BB_MAX)
+		n = BB_MAX;
+	for (i = 0; i < n; i++)
+		pr_info("nihil-bb: ev %3u t=%6u ms L=%08x H=%08x\n", i,
+			readl(bb + BB_EVENTS + i * 3), readl(bb + BB_EVENTS + i * 3 + 1),
+			readl(bb + BB_EVENTS + i * 3 + 2));
+	writel(0, bb);              /* mark as read */
+	iounmap(bb);
+	return -EAGAIN;
+}
+
 static int __init nihil_init(void)
 {
 	void (*soft_restart_fn)(unsigned long);
@@ -41,6 +83,9 @@ static int __init nihil_init(void)
 	void *buf;
 	unsigned int order;
 	ssize_t got;
+
+	if (readlog)
+		return nihil_readlog();
 
 	soft_restart_fn = (void *)kallsyms_lookup_name("soft_restart");
 	freeze_cpus_fn = (void *)kallsyms_lookup_name("freeze_secondary_cpus");

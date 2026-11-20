@@ -34,3 +34,15 @@
 #define WDT_CTRL    (WDT_BASE + 0x10)
 #define WDT_CFG     (WDT_BASE + 0x14)
 #define WDT_MODE    (WDT_BASE + 0x18)
+
+/* GPIO port H (main pio) */
+#define PORT_H 7
+
+/* Black box: 0x5FA00000-0x5FAB7BFF sits between the end of Linux's RAM
+ * (mem=506M -> 0x5F9FFFFF) and the first block U-Boot loads (ntxfw at
+ * 0x5FAB7C00), per the live /proc/cmdline and /proc/iomem (2026-11-19). */
+#define BLACKBOX_PHYS        0x5FA00000u
+#define BLACKBOX_MAGIC       0x4E49484Cu   /* "NIHL" */
+#define BLACKBOX_EVENTS      32            /* first event word */
+#define BLACKBOX_MAX_EVENTS  300
+#define BLACKBOX_WORDS       (BLACKBOX_EVENTS + BLACKBOX_MAX_EVENTS * 3)
