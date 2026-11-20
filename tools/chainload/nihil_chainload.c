@@ -37,10 +37,14 @@ static int readlog;
 module_param(readlog, int, 0444);
 MODULE_PARM_DESC(readlog, "1 = print Nihil's black box (RAM at 0x5FA00000) to the kernel log, then fail to load");
 
-static int args[16];
+static int args[24];
 static int nargs;
 module_param_array(args, int, &nargs, 0444);
 MODULE_PARM_DESC(args, "numbers handed to the image (boot parameters), stored at 0x5FA08000");
+
+static char *book = "";
+module_param(book, charp, 0444);
+MODULE_PARM_DESC(book, "path of a plain-text book (UTF-8, at most 4 MB) copied into RAM for the image; its address and size go to boot parameter slots 30 and 31");
 
 static int findtiming;
 module_param(findtiming, int, 0444);
@@ -336,6 +340,10 @@ static int __init nihil_init(void)
 	void *buf;
 	unsigned int order;
 	ssize_t got;
+	void *book_buf = NULL;
+	loff_t book_size = 0;
+	unsigned int book_order = 0;
+	unsigned long book_phys = 0;
 
 	if (readlog)
 		return nihil_readlog();
@@ -379,6 +387,46 @@ static int __init nihil_init(void)
 		return -EIO;
 	}
 
+	/* Optional book: read it into RAM that stays put; the image copies it away first thing. */
+	if (book[0]) {
+		struct file *bf = filp_open(book, O_RDONLY, 0);
+		loff_t bpos = 0;
+
+		if (IS_ERR(bf)) {
+			pr_err("nihil: cannot open book %s\n", book);
+			free_pages((unsigned long)buf, order);
+			return PTR_ERR(bf);
+		}
+		book_size = i_size_read(file_inode(bf));
+		if (book_size <= 0 || book_size > (4 << 20)) {
+			filp_close(bf, NULL);
+			pr_err("nihil: book size %lld not between 1 byte and 4 MB\n", book_size);
+			free_pages((unsigned long)buf, order);
+			return -EINVAL;
+		}
+		book_order = get_order(book_size);
+		book_buf = (void *)__get_free_pages(GFP_KERNEL, book_order);
+		if (book_buf && kernel_read(bf, bpos, book_buf, book_size) != book_size) {
+			free_pages((unsigned long)book_buf, book_order);
+			book_buf = NULL;
+		}
+		filp_close(bf, NULL);
+		if (!book_buf) {
+			pr_err("nihil: could not load the book\n");
+			free_pages((unsigned long)buf, order);
+			return -ENOMEM;
+		}
+		book_phys = virt_to_phys(book_buf);
+		/* The image moves itself to 0x48000000 and keeps its stack there: the book must not sit in its way. */
+		if (book_phys < 0x48400000UL && book_phys + book_size > 0x48000000UL) {
+			pr_err("nihil: book landed at 0x%lx, in the image's way. Run again.\n", book_phys);
+			free_pages((unsigned long)book_buf, book_order);
+			free_pages((unsigned long)buf, order);
+			return -EBUSY;
+		}
+		pr_info("nihil: book %s (%lld bytes) at phys 0x%lx\n", book, book_size, book_phys);
+	}
+
 	pr_info("nihil: starting %s (%lld bytes) at phys 0x%lx. Bye, Linux.\n",
 		image, size, (unsigned long)virt_to_phys(buf));
 
@@ -388,6 +436,8 @@ static int __init nihil_init(void)
 		args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12]);
 	if (dryrun) {
 		free_pages((unsigned long)buf, order);
+		if (book_buf)
+			free_pages((unsigned long)book_buf, book_order);
 		pr_info("nihil: dry run OK, not jumping\n");
 		return -EAGAIN;
 	}
@@ -404,6 +454,8 @@ static int __init nihil_init(void)
 		writel(nargs, pr + 1);
 		for (i = 0; i < nargs; i++)
 			writel(args[i], pr + 2 + i);
+		writel((u32)book_phys, pr + 2 + 30);
+		writel((u32)book_size, pr + 2 + 31);
 		writel(0x4E50524D, pr);
 		iounmap(pr);
 	}

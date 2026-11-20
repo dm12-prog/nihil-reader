@@ -79,7 +79,11 @@
 #define WAV_TEMPLATE 0x51800000u  /* control signals only = an "empty" frame */
 #define WAV_BUF0     0x52000000u  /* one buffer per waveform frame */
 #define WAV_BUF_STEP 0x00200000u
-#define MAX_FRAMES   100u
+#define MAX_FRAMES   100u         /* note: more than 104 frames would run into BOOK_BUF */
+#define BOOK_BUF     0x5F000000u  /* the book's text (plain UTF-8) */
+#define BOOK_MAX     0x00400000u
+#define PAGE_TAB     0x5F400000u  /* where each page starts in the text */
+#define PAGE_TAB_MAX 0x00080000u
 #define WAV_PITCH    1296u        /* bytes per line seen in Linux's EDMA setting */
 #define WAV_LINES     1451u       /* lines per frame seen in Linux's EDMA setting */
 

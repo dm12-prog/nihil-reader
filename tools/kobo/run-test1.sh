@@ -72,8 +72,12 @@ echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20
 
+# The book to read: plain text, made from an EPUB with tools/book/epub2txt.py.
+BOOK=""
+[ -s "$D/book.txt" ] && BOOK="book=$D/book.txt"
+echo "book: $BOOK"
 echo "--- dry run ---"
-insmod "$D/nihil_chainload.ko" image="$D/sage.bin" args="$ARGS" dryrun=1
+insmod "$D/nihil_chainload.ko" image="$D/sage.bin" args="$ARGS" $BOOK dryrun=1
 echo "dry run insmod returned $? (expected: non-zero, 'dry run OK' below)"
 dmesg | grep -i -E "nihil:|version|taint" | tail -12
 if ! dmesg | grep -q "nihil: dry run OK"; then
@@ -81,7 +85,7 @@ if ! dmesg | grep -q "nihil: dry run OK"; then
 fi
 echo "--- real run ---"
 sync; sleep 1; sync
-insmod "$D/nihil_chainload.ko" image="$D/sage.bin" args="$ARGS"
+insmod "$D/nihil_chainload.ko" image="$D/sage.bin" args="$ARGS" $BOOK
 echo "insmod returned $? (if you can read this, Linux is still running: the test did not start)"
 dmesg | tail -40
 sync
