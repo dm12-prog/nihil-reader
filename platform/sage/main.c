@@ -637,6 +637,17 @@ static void light_start(void)
         I2C_PORT = sp; I2C_SCL = sc; I2C_SDA = sd;
     }
     g_light_ready = light_probe(&g_light) == 0;
+    int en = pin_read(11, FRONTLIGHT_EN_PIN);
+    lg(T_LIGHT | 0x22, (uint32_t)en);                         /* the chips' enable line as Linux left it */
+    if (!g_light_ready && !en) {
+        /* Enable line low = both chips switched off. Kobo's driver raises it and
+         * sets the chips up again (aw99703_resume); light_set() does the set-up. */
+        pin_write(11, FRONTLIGHT_EN_PIN, 1);
+        pin_mode(11, FRONTLIGHT_EN_PIN, 1);
+        sleep_us(5000);
+        g_light_ready = light_probe(&g_light) == 0;
+    }
+    lg(T_LIGHT | 0x23, (uint32_t)g_light_ready);
 }
 static void hal_set_light(uint32_t brightness, uint32_t warmth)
 {
