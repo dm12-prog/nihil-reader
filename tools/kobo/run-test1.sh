@@ -2,6 +2,7 @@
 # Nihil test 2b/2c: screen engine. DRIVE=0 -> rehearsal with the panel power
 # off (2b). DRIVE=1 -> really draw (2c). Writes only log files in this folder.
 DRIVE=1
+ROT=1           # page direction on the panel: 1 or 3 = portrait (one of them is upside down), 0 = landscape
 MODE=1          # 1 = GC16 (full 16-grey update), 3 = DU (fast black/white)
 D=/mnt/onboard/.adds/nihil
 mkdir /tmp/nihil.lock 2>/dev/null || exit 0     # a double tap must not start two runs
@@ -66,7 +67,7 @@ if [ "$PMN" = 1 ] && [ $# = 9 ] && [ "$2" != 00 ]; then
   PM2=$(( 0x$6 | (0x$7 << 8) ))
 fi
 echo "power chip settings: distinct=$PMN -> $PM1,$PM2 (vcom reg=$2 $3)"
-ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2}"
+ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT}"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20

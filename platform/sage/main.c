@@ -520,7 +520,8 @@ __attribute__((noreturn)) int main(void)
     p_drive = pr[12]; p_mode = pr[13]; p_temp = pr[14];
     p_pm1 = pr[1] >= 15 ? pr[15] : 0;                         /* VCOM_ADJ1 | VCOM_ADJ2<<8 | VLDO_ADJ<<16 */
     p_pm2 = pr[1] >= 15 ? pr[16] : 0;                         /* VEE_VP_EXT | PWRON_DLY<<8 */
-    for (int i = 2; i < 17; i++)
+    draw_rot = pr[1] >= 16 ? pr[17] & 3u : 0;                 /* how the page sits on the panel */
+    for (int i = 2; i < 18; i++)
         lg(T_PARAM | (uint32_t)i, pr[i]);
     pr[0] = 0;                                                /* one-shot */
     LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
@@ -640,7 +641,7 @@ __attribute__((noreturn)) int main(void)
     for (;;) {
         wdt_feed();
         uint32_t l = REG32(R_PIO_BASE + 0x10);
-        int down = !((l >> BTN_PAGEDOWN_PIN) & 1), up = !((l >> BTN_PAGEUP_PIN) & 1);
+        int down = !((l >> BTN_NEXT_PIN) & 1), up = !((l >> BTN_BACK_PIN) & 1);
         if ((ticks() - idle_from) / 24000000u >= 120u) {      /* 2 minutes without a press: leave */
             lg(T_READ | 2, turns);
             break;
@@ -649,7 +650,7 @@ __attribute__((noreturn)) int main(void)
             continue;
         sleep_us(40000);                                      /* still pressed after 40 ms = a real press */
         l = REG32(R_PIO_BASE + 0x10);
-        int down2 = !((l >> BTN_PAGEDOWN_PIN) & 1), up2 = !((l >> BTN_PAGEUP_PIN) & 1);
+        int down2 = !((l >> BTN_NEXT_PIN) & 1), up2 = !((l >> BTN_BACK_PIN) & 1);
         if (down2 && up2) {                                   /* both buttons: leave */
             lg(T_READ | 3, turns);
             break;
@@ -670,7 +671,7 @@ __attribute__((noreturn)) int main(void)
         uint64_t w = ticks();
         while ((ticks() - w) / 24000u < 3000u) {
             l = REG32(R_PIO_BASE + 0x10);
-            int d3 = !((l >> BTN_PAGEDOWN_PIN) & 1), u3 = !((l >> BTN_PAGEUP_PIN) & 1);
+            int d3 = !((l >> BTN_NEXT_PIN) & 1), u3 = !((l >> BTN_BACK_PIN) & 1);
             if ((!d3 && !u3) || (d3 && u3))
                 break;
             wdt_feed();

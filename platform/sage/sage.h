@@ -22,6 +22,10 @@
 #define BTN_PAGEDOWN_PIN   5      /* PL5  = gpio-357 "PageDown" */
 #define BTN_PAGEUP_PIN     11     /* PL11 = gpio-363 "PageUp"   */
 #define HALL_PIN           9      /* PL9  = gpio-361 "Hall" (cover magnet) */
+/* Which one turns forward: tried on the device (test 3a, 20 Nov 2026). The
+ * kernel's labels read the other way round from how the Sage is held. */
+#define BTN_NEXT_PIN  BTN_PAGEUP_PIN
+#define BTN_BACK_PIN  BTN_PAGEDOWN_PIN
 /* Power button is not a GPIO on D00: it goes through the BD71828 power chip. */
 
 /* Frontlight driver enable line, AW99703 "hwen" = PL0 = gpio-352.

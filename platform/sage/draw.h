@@ -17,11 +17,28 @@ static const uint8_t font5x7[36][5] = {
     {0x07,0x08,0x70,0x08,0x07},{0x61,0x51,0x49,0x45,0x43},
 };
 
-static void draw_rect(volatile uint8_t *img, uint32_t w, uint32_t h, uint32_t x0, uint32_t y0, uint32_t rw, uint32_t rh, uint8_t c)
+/* The picture in memory is always the panel's own shape (pw x ph, landscape
+ * on the Sage). Drawing uses "page" coordinates; draw_rot says how the page
+ * sits on the panel: 0 = same way, 1 = page top at the panel's right edge,
+ * 2 = upside down, 3 = page top at the panel's left edge. */
+static uint32_t draw_rot;
+static uint32_t page_w(uint32_t pw, uint32_t ph) { return (draw_rot & 1) ? ph : pw; }
+static uint32_t page_h(uint32_t pw, uint32_t ph) { return (draw_rot & 1) ? pw : ph; }
+
+static void draw_rect(volatile uint8_t *img, uint32_t pw, uint32_t ph, uint32_t x0, uint32_t y0, uint32_t rw, uint32_t rh, uint8_t c)
 {
+    uint32_t w = page_w(pw, ph), h = page_h(pw, ph);
     for (uint32_t y = y0; y < y0 + rh && y < h; y++)
-        for (uint32_t x = x0; x < x0 + rw && x < w; x++)
-            img[y * w + x] = c;
+        for (uint32_t x = x0; x < x0 + rw && x < w; x++) {
+            uint32_t X, Y;
+            switch (draw_rot) {
+            case 1:  X = pw - 1 - y; Y = x;          break;
+            case 2:  X = pw - 1 - x; Y = ph - 1 - y; break;
+            case 3:  X = y;          Y = ph - 1 - x; break;
+            default: X = x;          Y = y;          break;
+            }
+            img[Y * pw + X] = c;
+        }
 }
 
 /* Draws digits, capital letters and spaces; returns the x after the text. */
@@ -48,20 +65,23 @@ static void draw_number(volatile uint8_t *img, uint32_t w, uint32_t h, uint32_t 
     draw_text(img, w, h, x, y, scale, &b[i]);
 }
 
-/* One "page" of the test book. */
-static void draw_page(volatile uint8_t *img, uint32_t w, uint32_t h, uint32_t page)
+/* One "page" of the test book (laid out for any page shape). */
+static void draw_page(volatile uint8_t *img, uint32_t pw, uint32_t ph, uint32_t page)
 {
     static const char *const body[4] = {
-        "THE QUICK BROWN FOX JUMPS OVER", "THE LAZY DOG", "NO LINUX IS RUNNING NOW", "HOLD BOTH BUTTONS TO LEAVE",
+        "THE QUICK BROWN FOX JUMPS", "OVER THE LAZY DOG", "NO LINUX IS RUNNING NOW", "HOLD BOTH BUTTONS TO LEAVE",
     };
-    draw_text(img, w, h, 120, 100, 24, "NIHIL");
-    draw_rect(img, w, h, 120, 300, w - 240, 8, 0x00);
-    uint32_t x = draw_text(img, w, h, 120, 380, 16, "PAGE ");
-    draw_number(img, w, h, x, 380, 16, page);
-    draw_number(img, w, h, 1100, 420, 60, page);
+    uint32_t w = page_w(pw, ph), h = page_h(pw, ph), m = 120;
+    draw_text(img, pw, ph, m, 100, 24, "NIHIL");
+    draw_rect(img, pw, ph, m, 300, w - 2 * m, 8, 0x00);
+    uint32_t x = draw_text(img, pw, ph, m, 380, 16, "PAGE ");
+    draw_number(img, pw, ph, x, 380, 16, page);
+    uint32_t digits = page >= 100 ? 3 : page >= 10 ? 2 : 1, sc = h > w ? 60 : 50;
+    draw_number(img, pw, ph, (w - (digits * 6 - 1) * sc) / 2, h > w ? 640 : 520 + 0 * m, sc, page);
+    uint32_t by = h > w ? 1240 : 940;
     for (uint32_t i = 0; i < 4; i++)
-        draw_text(img, w, h, 120, 900 + i * 100, 9, body[(i + page) % 4]);
-    /* progress bar: one block per page turned, wraps at 20 */
-    draw_rect(img, w, h, 120, 1340, w - 240, 4, 0x00);
-    draw_rect(img, w, h, 120, 1310, ((w - 240) / 20) * ((page - 1) % 20 + 1), 30, 0x00);
+        draw_text(img, pw, ph, m, by + i * 90, 8, body[(i + page) % 4]);
+    /* progress bar: one block per page, wraps at 20 */
+    draw_rect(img, pw, ph, m, h - 100, w - 2 * m, 4, 0x00);
+    draw_rect(img, pw, ph, m, h - 130, ((w - 2 * m) / 20) * ((page - 1) % 20 + 1), 30, 0x00);
 }
