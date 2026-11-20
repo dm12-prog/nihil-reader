@@ -37,6 +37,11 @@ static int readlog;
 module_param(readlog, int, 0444);
 MODULE_PARM_DESC(readlog, "1 = print Nihil's black box (RAM at 0x5FA00000) to the kernel log, then fail to load");
 
+static int args[16];
+static int nargs;
+module_param_array(args, int, &nargs, 0444);
+MODULE_PARM_DESC(args, "numbers handed to the image (boot parameters), stored at 0x5FA08000");
+
 static int regdump;
 module_param(regdump, int, 0444);
 MODULE_PARM_DESC(regdump, "1 = watch the screen hardware registers for ~4 s from inside Linux (read-only), print them, then fail to load");
@@ -255,10 +260,28 @@ static int __init nihil_init(void)
 
 	pr_info("nihil: soft_restart=%p freeze_secondary_cpus=%p first word=%08x magic=%08x\n",
 		soft_restart_fn, freeze_cpus_fn, ((u32 *)buf)[0], ((u32 *)buf)[9]);
+	pr_info("nihil: %d boot parameters: %d %d %d %d %d %d %d %d %d %d %d %d %d\n", nargs, args[0], args[1],
+		args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12]);
 	if (dryrun) {
 		free_pages((unsigned long)buf, order);
 		pr_info("nihil: dry run OK, not jumping\n");
 		return -EAGAIN;
+	}
+
+	{
+		/* boot parameters: magic, count, values. RAM above Linux, next to the black box. */
+		u32 __iomem *pr = ioremap(BB_PHYS + 0x8000, 4096);
+		int i;
+
+		if (!pr) {
+			free_pages((unsigned long)buf, order);
+			return -ENOMEM;
+		}
+		writel(nargs, pr + 1);
+		for (i = 0; i < nargs; i++)
+			writel(args[i], pr + 2 + i);
+		writel(0x4E50524D, pr);
+		iounmap(pr);
 	}
 
 	freeze_cpus_fn(0);               /* only CPU 0 keeps running */

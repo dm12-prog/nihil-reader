@@ -1,143 +1,559 @@
 /*
- * Milestone 2, test 2a: "look, don't touch" probe of the screen hardware.
+ * Milestone 2, test 2b / 2c: first drawing on the e-ink screen.
  *
- * Reads (never writes) the registers that matter for the e-ink screen and
- * stores them as (address, value) pairs in the black box, so we learn in what
- * state Linux hands the hardware over: clocks, EINK engine, timing controller,
- * IOMMU and every pin setting. Then reboots at once.
+ * One program, two modes (chosen by the loader, see "boot parameters"):
+ *   drive = 0 (test 2b, rehearsal): do everything EXCEPT switching the panel
+ *       power on and starting the timing controller. The engine works out the
+ *       whole update into RAM and we log what it produced.
+ *   drive = 1 (test 2c): the same, then power the panel and play the frames.
  *
- * Safety: the watchdog is armed for 16 s before the first read. If a read of
- * a switched-off block ever hangs the CPU, the Kobo still reboots by itself,
- * and bb[6] tells us which address was being read.
+ * How a screen update works on this chip (Kobo source, kobolabs/b300-sage:
+ * u-boot disp2/disp/de/disp_eink_manager.c + lowlevel_v2x/de_eink.c):
+ *   1. "Index": the engine compares the old picture and the new picture and
+ *      writes, per pixel, the pair (old grey, new grey).
+ *   2. "Decode": for each of the N frames of a waveform, the engine turns the
+ *      index into the raw 2-bit drive codes for every pixel ("wavedata").
+ *   3. "EDMA + TCON": the timing controller clocks one wavedata buffer per
+ *      frame out to the panel while the power chip (SY7636) supplies +-15 V.
+ *
+ * Safety: watchdog armed from the first instruction. All frames are decoded
+ * BEFORE the panel gets power, so nothing slow happens while it is powered.
+ * Every stage writes a marker to the black box (bb[6]) so a hang is located.
  */
 #include "sage.h"
 
+/* ---------- time ---------- */
 static uint64_t ticks(void)
 {
     uint32_t lo, hi;
     __asm__ volatile("isb; mrrc p15, 0, %0, %1, c14" : "=r"(lo), "=r"(hi));
     return ((uint64_t)hi << 32) | lo;
 }
-
-static uint32_t ticks_per_second(void)
+static uint64_t t0;
+static uint32_t now_us(void) { return (uint32_t)(ticks() - t0) / 24u; }   /* 24 MHz counter */
+static void sleep_us(uint32_t us)
 {
-    uint32_t f;
-    __asm__ volatile("mrc p15, 0, %0, c14, c0, 0" : "=r"(f));
-    return f ? f : 24000000u;
-}
-
-static uint64_t ms_to_ticks(uint32_t ms)
-{
-    return (uint64_t)ticks_per_second() / 1000u * ms;
-}
-
-static void sleep_ms(uint32_t ms)
-{
-    uint64_t end = ticks() + ms_to_ticks(ms);
+    uint64_t end = ticks() + (uint64_t)us * 24u;
     while (ticks() < end)
         ;
 }
 
-__attribute__((unused)) static uint32_t port_l_reg(uint32_t offset) { return R_PIO_BASE + PORT_L * 0x24u + offset; }
-__attribute__((unused)) static uint32_t port_h_reg(uint32_t offset) { return PIO_BASE + PORT_H * 0x24u + offset; }
-
-__attribute__((unused)) static void port_l_mode(int pin, uint32_t mode)
+/* ---------- watchdog ---------- */
+static void wdt_arm(uint32_t interval_code)        /* 0xB = 16 s, 6 = 6 s, 0 = 0.5 s */
 {
-    uint32_t reg = port_l_reg((uint32_t)(pin / 8) * 4u);
-    uint32_t shift = (uint32_t)(pin % 8) * 4u;
-    REG32(reg) = (REG32(reg) & ~(0xFu << shift)) | (mode << shift);
+    REG32(WDT_CFG) = (REG32(WDT_CFG) & ~0x3u) | 0x1u;
+    REG32(WDT_MODE) = (interval_code << 4) | 1u;
+    REG32(WDT_CTRL) = (1u << 0) | (0x0A57u << 1);
 }
-
-__attribute__((unused)) static void port_l_write(int pin, int value)
-{
-    if (value)
-        REG32(port_l_reg(0x10)) |= (1u << pin);
-    else
-        REG32(port_l_reg(0x10)) &= ~(1u << pin);
-}
+static void wdt_feed(void) { REG32(WDT_CTRL) = (1u << 0) | (0x0A57u << 1); }
 
 __attribute__((noreturn)) static void reboot(void)
 {
-    REG32(WDT_CFG) = (REG32(WDT_CFG) & ~0x3u) | 0x1u;
-    REG32(WDT_MODE) = (REG32(WDT_MODE) & ~(0xFu << 4)) | 1u;
-    REG32(WDT_CTRL) = (1u << 0) | (0x0A57u << 1);
+    wdt_arm(0);
     for (;;) {
-        sleep_ms(5);
+        sleep_us(5000);
         REG32(WDT_MODE) |= 1u;
     }
 }
 
+/* ---------- black box log: (tag, value) pairs ---------- */
 static volatile uint32_t *const bb = (volatile uint32_t *)BLACKBOX_PHYS;
 static uint32_t npairs;
-
-static void rd(uint32_t addr)
+static void lg(uint32_t tag, uint32_t v)
 {
-    bb[6] = addr;                            /* progress marker: "about to read this" */
-    uint32_t v = REG32(addr);
     if (npairs < BLACKBOX_MAX_PAIRS) {
-        bb[BLACKBOX_EVENTS + npairs * 2] = addr;
+        bb[BLACKBOX_EVENTS + npairs * 2] = tag;
         bb[BLACKBOX_EVENTS + npairs * 2 + 1] = v;
         npairs++;
         bb[3] = npairs;
     }
 }
-
-static void rd_range(uint32_t base, uint32_t from, uint32_t to)
+static void stage(uint32_t s) { bb[6] = s; lg(T_STAGE | s, now_us() / 1000u); wdt_feed(); }
+__attribute__((noreturn)) static void finish(uint32_t code)
 {
-    for (uint32_t o = from; o <= to; o += 4)
-        rd(base + o);
+    bb[4] = code | (npairs & 0xFFFF);
+    reboot();
 }
 
-static int clocked(uint32_t gate_reg, uint32_t bit)
+/* ---------- GPIO ---------- */
+static uint32_t port_base(int port) { return port == 11 ? R_PIO_BASE : PIO_BASE + (uint32_t)port * 0x24u; }
+static void pin_mode(int port, int pin, uint32_t mode)
 {
-    uint32_t v = REG32(gate_reg);
-    return (v & (1u << bit)) && (v & (1u << (16 + bit)));   /* clock on AND out of reset */
+    uint32_t reg = port_base(port) + (uint32_t)(pin / 8) * 4u, sh = (uint32_t)(pin % 8) * 4u;
+    REG32(reg) = (REG32(reg) & ~(0xFu << sh)) | (mode << sh);
+}
+static void pin_write(int port, int pin, int v)
+{
+    uint32_t reg = port_base(port) + 0x10;
+    REG32(reg) = v ? (REG32(reg) | (1u << pin)) : (REG32(reg) & ~(1u << pin));
+}
+static int pin_read(int port, int pin) { return (REG32(port_base(port) + 0x10) >> pin) & 1; }
+
+/* ---------- bit-banged I2C on PH2 (clock) / PH3 (data) = Kobo's "twi1" ---------- */
+#define I2C_PORT 7
+#define I2C_SCL  2
+#define I2C_SDA  3
+static void i2c_delay(void) { sleep_us(5); }                 /* ~100 kHz */
+static void scl(int hi) { pin_mode(I2C_PORT, I2C_SCL, hi ? 0 : 1); i2c_delay(); }
+static void sda(int hi) { pin_mode(I2C_PORT, I2C_SDA, hi ? 0 : 1); i2c_delay(); }
+static void i2c_init(void)
+{
+    /* Released = input (pulled high by the board), driven = output low. */
+    pin_mode(I2C_PORT, I2C_SCL, 0);
+    pin_mode(I2C_PORT, I2C_SDA, 0);
+    pin_write(I2C_PORT, I2C_SCL, 0);
+    pin_write(I2C_PORT, I2C_SDA, 0);
+    sleep_us(50);
+}
+static void i2c_start(void) { sda(1); scl(1); sda(0); scl(0); }
+static void i2c_stop(void) { sda(0); scl(1); sda(1); }
+static int i2c_tx(uint8_t b)                                  /* returns 1 if the chip answered */
+{
+    for (int i = 7; i >= 0; i--) {
+        sda((b >> i) & 1);
+        scl(1);
+        scl(0);
+    }
+    sda(1);
+    scl(1);
+    int ack = !pin_read(I2C_PORT, I2C_SDA);
+    scl(0);
+    return ack;
+}
+static uint8_t i2c_rx_last(void)
+{
+    uint8_t b = 0;
+    sda(1);
+    for (int i = 0; i < 8; i++) {
+        scl(1);
+        b = (uint8_t)((b << 1) | pin_read(I2C_PORT, I2C_SDA));
+        scl(0);
+    }
+    sda(1);                                                   /* NACK: last byte */
+    scl(1);
+    scl(0);
+    return b;
+}
+static int pmic_read(uint8_t reg)                             /* -1 = no answer */
+{
+    i2c_start();
+    if (!i2c_tx(SY7636_ADDR << 1) || !i2c_tx(reg)) { i2c_stop(); return -1; }
+    i2c_start();
+    if (!i2c_tx((SY7636_ADDR << 1) | 1)) { i2c_stop(); return -1; }
+    uint8_t v = i2c_rx_last();
+    i2c_stop();
+    return v;
+}
+static int pmic_write(uint8_t reg, uint8_t val)               /* 1 = ok */
+{
+    i2c_start();
+    int ok = i2c_tx(SY7636_ADDR << 1) && i2c_tx(reg) && i2c_tx(val);
+    i2c_stop();
+    return ok;
 }
 
-static void watchdog_arm_16s(void)
+/* ---------- boot parameters (written by the loader module) ---------- */
+struct timing { uint32_t lsl, lbl, ldl, lel, gdck_sta, lgonl, fsl, fbl, fdl, fel; };
+static struct timing tm;
+static uint32_t p_drive, p_mode, p_temp;
+
+/* ---------- waveform file (AWF), preloaded by U-Boot ---------- */
+static uint32_t rd32(uint32_t a)
 {
-    REG32(WDT_CFG) = (REG32(WDT_CFG) & ~0x3u) | 0x1u;       /* whole-system reset */
-    REG32(WDT_MODE) = (0xBu << 4) | 1u;                     /* 16 s, enabled */
-    REG32(WDT_CTRL) = (1u << 0) | (0x0A57u << 1);           /* restart the count */
+    const volatile uint8_t *p = (const volatile uint8_t *)a;
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+/* disp_waveform.c get_waveform_data(): returns address of frame 0's table, sets *frames */
+static uint32_t awf_lookup(uint32_t mode_slot, uint32_t temp, uint32_t *frames, uint32_t *frame_bytes)
+{
+    const volatile uint8_t *tt = (const volatile uint8_t *)(WAVEFORM_PHYS + 128);
+    uint32_t mode = WAVEFORM_PHYS + rd32(WAVEFORM_PHYS + 160 + mode_slot * 4);
+    uint32_t i;
+    for (i = 0; i < 32; i++) {
+        uint32_t off = rd32(mode + i * 4);
+        if ((off == 0 || tt[i] == 0) && i > 0)
+            break;
+        if (temp <= tt[i])
+            break;
+    }
+    if (i > 0)
+        i--;
+    uint32_t toff = rd32(mode + i * 4);
+    uint32_t head = rd32(mode + toff);
+    *frames = head & 0xFFFF;
+    *frame_bytes = head >> 16;
+    lg(T_WF | 0x10 | mode_slot, mode - WAVEFORM_PHYS);
+    lg(T_WF | 0x20 | mode_slot, (i << 24) | toff);
+    lg(T_WF | 0x30 | mode_slot, head);
+    return mode + toff + 4;
+}
+
+/* ---------- control-signal template: disp_eink_data.c init_eink_ctrl_data_16() ---------- */
+static uint32_t LTL, FTL;
+static void build_template(volatile uint32_t *w)
+{
+    for (uint32_t h = 0; h < FTL; h++) {
+        for (uint32_t x = 0; x < LTL; x++) {
+            uint32_t v = 0;
+            int in_rows = h >= tm.fsl + tm.fbl && h < tm.fsl + tm.fbl + tm.fdl;
+            if (h > tm.fsl + tm.fbl && h < tm.fsl + tm.fbl + tm.fdl && x < tm.lsl)
+                v |= 1u << 2;                                             /* sdle */
+            if (!(in_rows && x >= tm.lsl + tm.lbl && x < tm.lsl + tm.lbl + tm.ldl))
+                v |= 1u << 3;                                             /* sdsp (active low) */
+            if (h < tm.fsl + tm.fbl + tm.fdl && x >= tm.gdck_sta + tm.lsl && x < tm.gdck_sta + tm.lsl + tm.lgonl)
+                v |= 1u << 4;                                             /* gdck */
+            if (!((h == 0 && x >= tm.gdck_sta + (tm.lgonl >> 1)) || (h > 0 && h < tm.fsl) ||
+                  (h == tm.fsl && x < LTL - tm.gdck_sta - (tm.lgonl >> 1))))
+                v |= 1u << 5;                                             /* gdsp (active low) */
+            if ((h == tm.fbl && x >= tm.gdck_sta) || (h > tm.fbl && h < tm.fbl + tm.fdl) ||
+                (h == tm.fbl + tm.fdl && x < tm.gdck_sta))
+                v |= 1u << 1;                                             /* sdoe */
+            if ((h == 0 && x >= tm.gdck_sta) || (h > 0 && h < tm.fbl + tm.fdl) ||
+                (h == tm.fbl + tm.fdl && x < tm.gdck_sta))
+                v |= 1u << 0;                                             /* gdoe */
+            *w++ = v;
+        }
+        if ((h & 0xFF) == 0)
+            wdt_feed();
+    }
+}
+
+static void copy_words(volatile uint32_t *d, const volatile uint32_t *s, uint32_t n)
+{
+    while (n--)
+        *d++ = *s++;
+}
+static void fill_words(volatile uint32_t *d, uint32_t v, uint32_t n)
+{
+    while (n--)
+        *d++ = v;
+}
+
+/* ---------- test picture (8 bits per pixel, 0 = black, 255 = white) ---------- */
+static uint8_t pattern(uint32_t x, uint32_t y)
+{
+    if (x < 40 || y < 40 || x >= PANEL_W - 40 || y >= PANEL_H - 40)
+        return 0x00;                                         /* black frame */
+    if (y >= 500 && y < 940 && x >= 160 && x < 1760)
+        return (uint8_t)(((x - 160) / 100) * 17);            /* 16 grey bars, black -> white */
+    if (y >= 140 && y < 400 && x >= 160 && x < 800)
+        return 0x00;                                         /* solid black block */
+    if (y >= 140 && y < 400 && x >= 1120 && x < 1760)
+        return (((x / 40) ^ (y / 40)) & 1) ? 0x00 : 0xFF;    /* chequerboard */
+    if (y >= 1040 && y < 1300 && x >= 160 && x < 1760)
+        return ((x / 8) & 1) ? 0x00 : 0xFF;                  /* fine stripes */
+    return 0xFF;
+}
+
+/* ---------- EINK engine registers (de_eink.c) ---------- */
+#define EE(off) REG32(EINK_BASE + (off))
+static int ee_wait(uint32_t bit, uint32_t timeout_us)
+{
+    uint32_t start = now_us();
+    while (!(EE(0x004) & bit))
+        if (now_us() - start > timeout_us)
+            return 0;
+    return 1;
+}
+
+static void panel_power_off(void)
+{
+    pin_write(4, 3, 0);                                       /* PE3: VCOM off */
+    sleep_us(2000);
+    pmic_write(0x00, 0x60);                                   /* rails off */
+    uint32_t s = now_us();
+    while (pin_read(7, 7) && now_us() - s < 300000u)
+        ;
+    lg(T_PWR | 0x10, now_us() - s);                           /* time until power-good dropped */
+    sleep_us(20000);
+    pin_write(1, 7, 0);                                       /* PB7: xon off */
+}
+
+static void tcon_off(void)
+{
+    REG32(TCON_BASE + 0x040) = 0;
+    REG32(TCON_BASE + 0x000) = 0;
+    REG32(PIO_BASE + 3 * 0x24 + 0x0) = 0x77777777;            /* port D pins back to "off" */
+    REG32(PIO_BASE + 3 * 0x24 + 0x4) = 0x77777777;
+    REG32(PIO_BASE + 3 * 0x24 + 0x8) = 0x77777777;
+    REG32(CCU_BASE + 0xB7C) = 0;
+    REG32(CCU_BASE + 0xB60) = 0;
+    REG32(CCU_BASE + 0x040) &= ~(1u << 31);
 }
 
 __attribute__((noreturn)) int main(void)
 {
+    t0 = ticks();
+    wdt_arm(0xB);
     for (int i = 0; i < BLACKBOX_WORDS; i++)
         bb[i] = 0;
-    bb[1] = 3;                               /* log format 3: (address, value) pairs */
-    bb[2] = ticks_per_second();
+    bb[1] = 3;
+    bb[2] = 24000000u;
     bb[0] = BLACKBOX_MAGIC;
-    watchdog_arm_16s();
 
-    /* 1. Clock controller: always safe to read. */
-    static const uint16_t ccu[] = { 0x020, 0x040, 0x048, 0x060, 0x540, 0x600, 0x60C, 0x610,
-                                    0x61C, 0x630, 0x63C, 0x640, 0x7BC, 0x804, 0xB5C, 0xB60, 0xB7C };
-    for (unsigned i = 0; i < sizeof ccu / sizeof ccu[0]; i++)
-        rd(CCU_BASE + ccu[i]);
+    /* --- 1. boot parameters --- */
+    stage(1);
+    volatile uint32_t *pr = (volatile uint32_t *)PARAMS_PHYS;
+    lg(T_PARAM, pr[0]);
+    lg(T_PARAM | 1, pr[1]);
+    if (pr[0] != PARAMS_MAGIC || pr[1] < 13)
+        finish(END_BAD_PARAMS);
+    tm.lsl = pr[2]; tm.lbl = pr[3]; tm.ldl = pr[4]; tm.lel = pr[5]; tm.gdck_sta = pr[6];
+    tm.lgonl = pr[7]; tm.fsl = pr[8]; tm.fbl = pr[9]; tm.fdl = pr[10]; tm.fel = pr[11];
+    p_drive = pr[12]; p_mode = pr[13]; p_temp = pr[14];
+    for (int i = 2; i < 15; i++)
+        lg(T_PARAM | (uint32_t)i, pr[i]);
+    pr[0] = 0;                                                /* one-shot */
+    LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
+    FTL = tm.fsl + tm.fbl + tm.fdl + tm.fel;
 
-    /* 2. Every pin bank A..I: function, data, drive, pull. Plus port L. */
-    for (uint32_t p = 0; p < 9; p++)
-        rd_range(PIO_BASE + p * 0x24u, 0x00, 0x20);
-    rd_range(R_PIO_BASE, 0x00, 0x20);
+    /* Cross-check the timing against what Linux left in the engine and the
+     * timing controller's last settings. Refuse to go on if they disagree. */
+    uint32_t coor = EE(0x414), wsize = EE(0x410), pitch = EE(0x40C);
+    lg(T_CHK, coor); lg(T_CHK | 1, wsize); lg(T_CHK | 2, pitch); lg(T_CHK | 3, EE(0x000));
+    int ok = tm.ldl * 8 == PANEL_W && tm.fdl == PANEL_H &&
+             coor == (((tm.fbl + tm.fsl) << 16) | ((tm.lbl + tm.lsl) << 3)) &&
+             wsize == (((FTL - 1) << 16) | (LTL * 8 - 1)) && pitch == LTL * 4 &&
+             LTL * 4 == WAV_PITCH && FTL <= WAV_LINES_MAX;
+    lg(T_CHK | 4, (uint32_t)ok);
+    if (!ok)
+        finish(END_BAD_TIMING);
 
-    /* 3. Blocks that are only readable while their clock runs. */
-    bb[7] = (uint32_t)clocked(CCU_BASE + 0x61C, 0)
-          | (uint32_t)clocked(CCU_BASE + 0xB7C, 0) << 1
-          | (uint32_t)clocked(CCU_BASE + 0x7BC, 0) << 2
-          | (uint32_t)clocked(CCU_BASE + 0xB5C, 0) << 3
-          | (uint32_t)clocked(CCU_BASE + 0x60C, 0) << 4;
-    if (bb[7] & 1) {                         /* EINK engine */
-        rd_range(EINK_BASE, 0x000, 0x05C);
-        rd_range(EINK_BASE, 0x150, 0x15C);
-        rd_range(EINK_BASE, 0x400, 0x41C);
-        rd_range(EINK_BASE, 0x440, 0x444);
+    /* --- 2. waveform file --- */
+    stage(2);
+    for (uint32_t o = 0; o < 16; o += 4)
+        lg(T_WF | o, rd32(WAVEFORM_PHYS + o));
+    for (uint32_t o = 0; o < 16; o += 4)
+        lg(T_WF | 0x80 | o, rd32(WAVEFORM_PHYS + 128 + o));  /* temperature table */
+    i2c_init();
+    int reg[9];
+    for (int r = 0; r < 9; r++) {
+        reg[r] = pmic_read((uint8_t)r);
+        lg(T_PMIC | (uint32_t)r, (uint32_t)reg[r]);
     }
-    if (bb[7] & 2)                           /* timing controller */
-        rd_range(TCON_BASE, 0x000, 0x0FC);
-    if (bb[7] & 4)                           /* IOMMU */
-        rd_range(IOMMU_BASE, 0x000, 0x09C);
+    uint32_t temp = p_temp ? p_temp : (reg[8] > 0 && reg[8] < 60 ? (uint32_t)reg[8] : 25u);
+    lg(T_WF | 0x40, temp);
+    uint32_t frames_init, frames_gc16, fb;
+    awf_lookup(0, temp, &frames_init, &fb);
+    uint32_t wf_gc16 = awf_lookup(1, temp, &frames_gc16, &fb);
+    uint32_t frames_du, fb_du;
+    uint32_t wf_du = awf_lookup(3, temp, &frames_du, &fb_du);
+    uint32_t wf = p_mode == 3 ? wf_du : wf_gc16;
+    uint32_t frames = p_mode == 3 ? frames_du : frames_gc16;
+    if (p_mode == 3)
+        fb = fb_du;
+    lg(T_WF | 0x41, wf); lg(T_WF | 0x42, frames); lg(T_WF | 0x43, fb);
+    if (frames == 0 || frames > MAX_FRAMES || (fb != 1024 && fb != 0))
+        finish(END_BAD_WAVEFORM);
 
-    bb[4] = 0x600D0000u | (npairs & 0xFFFF);
-    reboot();
+    /* --- 3. memory: switch the IOMMU to pass-through, build pictures --- */
+    stage(3);
+    lg(T_MMU, REG32(IOMMU_BASE + 0x20)); lg(T_MMU | 1, REG32(IOMMU_BASE + 0x30));
+    REG32(IOMMU_BASE + 0x30) = 0x7F;                          /* every master: real addresses */
+    lg(T_MMU | 2, REG32(IOMMU_BASE + 0x30));
+
+    volatile uint8_t *last = (volatile uint8_t *)IMG_LAST, *cur = (volatile uint8_t *)IMG_CUR;
+    fill_words((volatile uint32_t *)IMG_LAST, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);   /* "screen is white" */
+    (void)last;
+    for (uint32_t y = 0; y < PANEL_H; y++) {
+        for (uint32_t x = 0; x < PANEL_W; x++)
+            cur[y * PANEL_W + x] = pattern(x, y);
+        if ((y & 0xFF) == 0)
+            wdt_feed();
+    }
+    fill_words((volatile uint32_t *)IDX_OLD, 0, PANEL_W * PANEL_H * 2 / 4);
+    fill_words((volatile uint32_t *)IDX_NEW, 0, PANEL_W * PANEL_H * 2 / 4);
+
+    /* --- 4. control-signal template + one copy per frame --- */
+    stage(4);
+    build_template((volatile uint32_t *)WAV_TEMPLATE);
+    stage(5);
+    for (uint32_t f = 0; f < frames; f++) {
+        copy_words((volatile uint32_t *)(WAV_BUF0 + f * WAV_BUF_STEP), (volatile uint32_t *)WAV_TEMPLATE, LTL * FTL);
+        wdt_feed();
+    }
+
+    /* --- 5. index calculation (old picture, new picture -> per-pixel pair) --- */
+    stage(6);
+    for (uint32_t p = 0; p < 16; p++)
+        EE(0x040 + (p << 4)) = 0;                             /* all pipes off */
+    EE(0x000) = 0x12;                                         /* 5-bit greys, 16 data lines (as Linux) */
+    EE(0x004) = 1u << 4;                                      /* status flags on */
+    EE(0x004) = (1u << 4) | 3u;                               /* clear old flags */
+    EE(0x00C) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+    EE(0x010) = IMG_LAST;  EE(0x014) = PANEL_W;
+    EE(0x018) = IMG_CUR;   EE(0x01C) = PANEL_W;
+    EE(0x024) = 0;
+    EE(0x028) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+    EE(0x020) = IDX_OLD;
+    EE(0x02C) = IDX_NEW;
+    uint32_t ts = now_us();
+    EE(0x008) = (1u << 8) | 1u;                               /* flash mode GLOBAL, start */
+    int idx_ok = ee_wait(2, 500000);
+    lg(T_IDX, (uint32_t)idx_ok); lg(T_IDX | 1, now_us() - ts); lg(T_IDX | 2, EE(0x004));
+    lg(T_IDX | 3, EE(0x024)); lg(T_IDX | 4, EE(0x028));
+    EE(0x004) = (EE(0x004) & 0x1E);                           /* clear the index flag */
+    volatile uint16_t *ix = (volatile uint16_t *)IDX_NEW;
+    lg(T_IDX | 5, ix[0]);                                     /* corner: black on white */
+    lg(T_IDX | 6, ix[700 * PANEL_W + 900]);                   /* a grey bar */
+    lg(T_IDX | 7, ix[100 * PANEL_W + 960]);                   /* white stays white */
+    if (!idx_ok)
+        finish(END_IDX_TIMEOUT);
+
+    /* --- 6. decode every frame into its own buffer --- */
+    stage(7);
+    uint32_t dec_pitch = ((tm.lbl + tm.lsl + tm.lel) << 2) + (PANEL_W >> 1);
+    uint32_t dec_off = (tm.fbl + tm.fsl) * dec_pitch + ((tm.lbl + tm.lsl) << 2);
+    EE(0x044) = 0;
+    EE(0x048) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+    uint32_t worst = 0;
+    for (uint32_t f = 0; f < frames; f++) {
+        EE(0x04C) = wf + 1024u * f;                           /* this frame's 32x32 table */
+        EE(0x040) = 1;
+        EE(0x00C) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+        EE(0x15C) = dec_pitch;
+        EE(0x154) = IDX_NEW;
+        EE(0x158) = WAV_BUF0 + f * WAV_BUF_STEP + dec_off;
+        ts = now_us();
+        EE(0x150) = 1;
+        if (!ee_wait(1, 500000)) {
+            lg(T_DEC | 0xFF, f); lg(T_DEC | 0xFE, EE(0x004));
+            finish(END_DEC_TIMEOUT);
+        }
+        uint32_t d = now_us() - ts;
+        if (d > worst)
+            worst = d;
+        EE(0x004) = (EE(0x004) & 0x1D);                       /* clear the decode flag */
+        wdt_feed();
+    }
+    EE(0x040) = 0;
+    lg(T_DEC, frames); lg(T_DEC | 1, worst);
+
+    /* What did the decoder write? Sample 3 frames: data bits used, control bits intact. */
+    for (uint32_t k = 0; k < 3; k++) {
+        uint32_t f = k == 0 ? 0 : k == 1 ? frames / 2 : frames - 1;
+        volatile uint32_t *b = (volatile uint32_t *)(WAV_BUF0 + f * WAV_BUF_STEP);
+        volatile uint32_t *t = (volatile uint32_t *)WAV_TEMPLATE;
+        uint32_t nz = 0, ctl_bad = 0, sum = 0, outside = 0;
+        for (uint32_t i = 0; i < LTL * FTL; i += 5) {
+            uint32_t v = b[i];
+            if (v >> 8) nz++;
+            if ((v & 0xFF) != t[i]) ctl_bad++;
+            sum += v;
+            if ((v >> 8) && (t[i] & 8)) outside++;            /* data where no pixel is clocked */
+        }
+        lg(T_DEC | 0x10 | k, f); lg(T_DEC | 0x20 | k, nz); lg(T_DEC | 0x30 | k, ctl_bad);
+        lg(T_DEC | 0x40 | k, sum); lg(T_DEC | 0x50 | k, outside);
+        /* one data word from the black block, the white area and a grey bar */
+        uint32_t row = tm.fsl + tm.fbl, col = tm.lsl + tm.lbl;
+        lg(T_DEC | 0x60 | k, b[(row + 200) * LTL + col + 300 / 8]);
+        lg(T_DEC | 0x70 | k, b[(row + 100) * LTL + col + 960 / 8]);
+        lg(T_DEC | 0x80 | k, b[(row + 700) * LTL + col + 900 / 8]);
+        wdt_feed();
+    }
+
+    if (!p_drive)
+        finish(END_REHEARSAL_OK);
+
+    /* --- 7. DRIVE: power the panel and play the frames --- */
+    stage(8);
+    wdt_arm(6);                                               /* from here: 6 s to finish or reboot */
+    /* frame feeder: data clocked out of RAM by the EDMA */
+    uint32_t hs = tm.lbl + tm.lsl + tm.lel, vs = tm.fbl + tm.fsl + tm.fel;
+    EE(0x404) = 0x80000011;                                   /* EDMA on, 16 data lines */
+    EE(0x400) = 0x80000000;
+    EE(0x408) = WAV_TEMPLATE;                                 /* first: an empty frame (no drive) */
+    EE(0x40C) = (PANEL_W + (hs << 3)) >> 1;
+    EE(0x410) = ((PANEL_H + vs - 1) << 16) | (PANEL_W + (hs << 3) - 1);
+    EE(0x414) = ((tm.fbl + tm.fsl) << 16) | ((tm.lbl + tm.lsl) << 3);
+    EE(0x418) = ((PANEL_H - 1) << 16) | (PANEL_W - 1);
+    EE(0x404) |= 1;
+    EE(0x400) = 0x80010001;                                   /* "buffer ready" */
+
+    /* timing controller clock + pins + settings (values seen under Linux, test 2a) */
+    REG32(CCU_BASE + 0x040) |= 1u << 31;                      /* video PLL on */
+    ts = now_us();
+    while (!(REG32(CCU_BASE + 0x040) & (1u << 28)) && now_us() - ts < 20000u)
+        ;
+    lg(T_TCON, REG32(CCU_BASE + 0x040)); lg(T_TCON | 1, now_us() - ts);
+    REG32(CCU_BASE + 0xB60) = 0x80000000;
+    REG32(CCU_BASE + 0xB7C) = 0x00010000;
+    REG32(CCU_BASE + 0xB7C) = 0x00010001;
+    sleep_us(100);
+    REG32(TCON_BASE + 0x000) = 0;
+    REG32(TCON_BASE + 0x004) = 0;
+    REG32(TCON_BASE + 0x044) = 0xF0000006;
+    REG32(TCON_BASE + 0x048) = 0x014305AA;
+    REG32(TCON_BASE + 0x04C) = 0x014B0001;
+    REG32(TCON_BASE + 0x050) = 0x0B760001;
+    REG32(TCON_BASE + 0x054) = 0x00010001;
+    REG32(TCON_BASE + 0x088) = 0x04000000;
+    REG32(TCON_BASE + 0x08C) = 0;                             /* outputs enabled */
+
+    /* panel power: xon, rails on over I2C, wait for "power good", then VCOM */
+    stage(9);
+    pin_write(1, 7, 1);                                       /* PB7 xon */
+    int w1 = pmic_write(0x04, 0x00), w2 = pmic_write(0x00, 0xE0);
+    ts = now_us();
+    while (!pin_read(7, 7) && now_us() - ts < 200000u)
+        ;
+    uint32_t pg_us = now_us() - ts;
+    lg(T_PWR, (uint32_t)(w1 | (w2 << 1) | (pin_read(7, 7) << 2))); lg(T_PWR | 1, pg_us);
+    lg(T_PWR | 2, (uint32_t)pmic_read(0x07));
+    if (!w1 || !w2 || !pin_read(7, 7)) {
+        panel_power_off();
+        tcon_off();
+        finish(END_NO_POWER_GOOD);
+    }
+    pin_write(4, 3, 1);                                       /* PE3: VCOM on */
+    sleep_us(10000);
+
+    /* go: pins to the panel, controller on */
+    stage(10);
+    REG32(PIO_BASE + 3 * 0x24 + 0x0) = 0x22222222;
+    REG32(PIO_BASE + 3 * 0x24 + 0x4) = 0x22222222;
+    REG32(PIO_BASE + 3 * 0x24 + 0x8) = 0x72222222;
+    REG32(TCON_BASE + 0x040) = 0x82000080;
+    REG32(TCON_BASE + 0x000) = 0x80000000;
+
+    /* Play list: 2 empty frames, the real frames, 2 empty frames. A new buffer
+     * is handed over once per scan, when the line counter wraps around. */
+    uint32_t total = frames + 4, shown = 0, prev = 0, wraps_bad = 0, maxline = 0;
+    ts = now_us();
+    uint32_t last_wrap = ts;
+    while (shown < total) {
+        uint32_t line = (REG32(TCON_BASE + 0x0FC) >> 16) & 0xFFF;
+        if (line > maxline)
+            maxline = line;
+        if (line < prev) {                                    /* a new scan just started */
+            shown++;
+            uint32_t next = shown;                            /* buffer for the scan after this one */
+            uint32_t addr = (next >= 2 && next < 2 + frames) ? WAV_BUF0 + (next - 2) * WAV_BUF_STEP : WAV_TEMPLATE;
+            EE(0x408) = addr;
+            EE(0x400) = 0x80010001;
+            uint32_t n = now_us();
+            if (n - last_wrap > 16000u || n - last_wrap < 8000u)
+                wraps_bad++;
+            last_wrap = n;
+        }
+        prev = line;
+        if (now_us() - last_wrap > 100000u) {                 /* scanning stopped? bail out */
+            lg(T_PLAY | 0xFF, shown);
+            break;
+        }
+    }
+    REG32(TCON_BASE + 0x040) = 0;                             /* stop clocking the panel */
+    lg(T_PLAY, shown); lg(T_PLAY | 1, now_us() - ts); lg(T_PLAY | 2, wraps_bad); lg(T_PLAY | 3, maxline);
+    lg(T_PLAY | 4, (uint32_t)pin_read(7, 7)); lg(T_PLAY | 5, (uint32_t)pmic_read(0x07));
+
+    stage(11);
+    sleep_us(20000);
+    panel_power_off();
+    tcon_off();
+    lg(T_PWR | 0x11, (uint32_t)pmic_read(0x00));
+    stage(12);
+    /* Leave the picture on screen for 4 s so it can be looked at, then reboot. */
+    wdt_arm(0xB);
+    sleep_us(4000000);
+    finish(shown == total ? END_DRAWN_OK : END_PLAY_ABORT);
 }
