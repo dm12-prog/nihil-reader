@@ -50,8 +50,8 @@ static int nihil_readlog(void)
 		pr_err("nihil-bb: ioremap failed\n");
 		return -ENOMEM;
 	}
-	pr_info("nihil-bb: magic=%08x version=%u cntfrq=%u events=%u end=%08x\n",
-		readl(bb + 0), readl(bb + 1), readl(bb + 2), readl(bb + 3), readl(bb + 4));
+	pr_info("nihil-bb: magic=%08x version=%u cntfrq=%u events=%u end=%08x button=%08x\n",
+		readl(bb + 0), readl(bb + 1), readl(bb + 2), readl(bb + 3), readl(bb + 4), readl(bb + 5));
 	if (readl(bb + 0) != BB_MAGIC) {
 		pr_info("nihil-bb: no valid log (RAM was cleared, or Nihil never got that far)\n");
 		pr_info("nihil-bb: first words %08x %08x %08x %08x\n",

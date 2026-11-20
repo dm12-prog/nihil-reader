@@ -1,5 +1,5 @@
 /*
- * Milestone 1, test 1d: "black box recorder", watching every pin port (A..I and L) for 30 s.
+ * Milestone 1, test 1e: black box (all pin ports, 30 s) + a page button reboots at once.
  *
  * Test 1b proved Nihil runs (clock + watchdog reboot work) but the page buttons
  * were not seen. We can't show anything on screen yet, so this version writes
@@ -116,6 +116,7 @@ __attribute__((noreturn)) int main(void)
     for (int i = 0; i < BB_PORTS; i++)
         bb[24 + i] = last[i];                /* words 24-33: starting data of A..I, L */
     uint32_t n = 0;
+    int held = 0;
 
     while (ticks() - start < ms_to_ticks(30000)) {
         read_ports(now);
@@ -131,6 +132,15 @@ __attribute__((noreturn)) int main(void)
             }
             n++;
             bb[3] = n;
+        }
+        /* Test 1e: a page button held ~50 ms reboots right away (bb[5] says which). */
+        uint32_t l = now[9];
+        int up = !((l >> BTN_PAGEUP_PIN) & 1), down = !((l >> BTN_PAGEDOWN_PIN) & 1);
+        held = (up || down) && (ticks() - start > ms_to_ticks(2000)) ? held + 1 : 0;
+        if (held >= 25) {
+            bb[5] = up ? 0x55500000u : 0xD0D00000u;   /* "UP" or "DOWN" */
+            bb[4] = 0xB7700000u | (n & 0xFFFF);
+            reboot();
         }
         sleep_ms(2);
     }
