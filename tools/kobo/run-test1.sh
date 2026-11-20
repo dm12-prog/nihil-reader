@@ -57,16 +57,27 @@ if [ "$N" = 1 ] && [ -n "$LIVE" ]; then
 else
   echo "no single timing found: not starting Nihil"; rmdir /tmp/nihil.lock; sync; exit 1
 fi
-# Screen power chip settings (regs 1,2,3,5,6) as Linux had them: every sample
-# taken above must agree, otherwise Nihil gets 0,0 and refuses to power the panel.
-PMN=$(dmesg | grep "nihil-pm: t=" | sed 's/.*regs0-8: //' | awk '{print $2,$3,$4,$6,$7}' | sort -u | wc -l)
-set -- $(dmesg | grep "nihil-pm: t=" | sed 's/.*regs0-8: //' | tail -1)
+# Screen power chip settings (regs 1,2,3,5,6) as Linux had them. Only samples
+# taken while Linux had the panel rails ON count (register 0 = e0): when the
+# chip has just woken up it still shows its factory defaults for a moment.
+# Those samples must all agree, otherwise Nihil gets 0,0 and refuses to draw.
+PMS=$(dmesg | grep "nihil-pm: t=" | sed 's/.*regs0-8: //' | awk '$1 == "e0" {print $2,$3,$4,$6,$7}' | sort -u)
+PMN=$(echo "$PMS" | grep -c .)
+set -- $PMS
 PM1=0; PM2=0
-if [ "$PMN" = 1 ] && [ $# = 9 ] && [ "$2" != 00 ]; then
-  PM1=$(( 0x$2 | (0x$3 << 8) | (0x$4 << 16) ))
-  PM2=$(( 0x$6 | (0x$7 << 8) ))
+if [ "$PMN" = 1 ] && [ $# = 5 ] && [ "$1" != 00 ]; then
+  PM1=$(( 0x$1 | (0x$2 << 8) | (0x$3 << 16) ))
+  PM2=$(( 0x$4 | (0x$5 << 8) ))
 fi
-echo "power chip settings: distinct=$PMN -> $PM1,$PM2 (vcom reg=$2 $3)"
+# These are fixed factory settings: remember a good reading, and use the
+# remembered one when Linux did not have the rails on during this sampling.
+if [ "$PM1" != 0 ]; then
+  echo "$PM1 $PM2" > "$D/pmic.cfg"
+elif [ "$PMN" = 0 ] && [ -s "$D/pmic.cfg" ]; then
+  read PM1 PM2 < "$D/pmic.cfg"
+  echo "no rails-on sample this time: using remembered settings"
+fi
+echo "power chip settings: distinct=$PMN -> $PM1,$PM2 (vcom reg=$1 $2)"
 ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT}"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
