@@ -22,7 +22,7 @@
  * Every stage writes a marker to the black box (bb[6]) so a hang is located.
  */
 #include "sage.h"
-#include "../../core/reader.h"
+#include "../../core/app.h"
 
 /* ---------- time ---------- */
 static uint64_t ticks(void)
@@ -645,20 +645,14 @@ __attribute__((noreturn)) int main(void)
     /* --- 6. test 3c: a real book, pages turned with the page buttons --- */
     stage(7);
     static const char no_book[] = "No book was handed to Nihil.\nPut a plain text file at .adds/nihil/book.txt and run the test again.\n";
-    struct reader rd;
-    rd.pw = PANEL_W; rd.ph = PANEL_H; rd.rot = p_rot;
-    rd.text = book_len ? (const uint8_t *)BOOK_BUF : (const uint8_t *)no_book;
-    rd.len = book_len ? book_len : sizeof no_book - 1;
-    rd_defaults(&rd);
-    volatile uint32_t *page_start = (volatile uint32_t *)PAGE_TAB;   /* text offset where each page begins */
-    uint32_t page = 0, turns = 0, next_pos;
-    page_start[0] = 0;
+    static struct app app;
+    app_init(&app, book_len ? (const uint8_t *)BOOK_BUF : (const uint8_t *)no_book, book_len ? book_len : sizeof no_book - 1,
+             PANEL_W, PANEL_H, p_rot, (volatile uint32_t *)PAGE_TAB, PAGE_TAB_MAX);
+    uint32_t turns = 0;
 
     uint32_t tr = now_us();
-    rd.img = (volatile uint8_t *)img_cur;
     fill_words((volatile uint32_t *)img_cur, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);
-    next_pos = rd_page(&rd, page_start[page], 1);
-    rd_footer(&rd, page + 1, next_pos);
+    app_paint(&app, (volatile uint8_t *)img_cur);
     lg(T_READ, now_us() - tr);                                /* time to paint one page */
     show(1);
     stage(8);
@@ -684,25 +678,15 @@ __attribute__((noreturn)) int main(void)
         if (down != down2 || up != up2)
             continue;
         idle_from = ticks();
-        if (down) {
-            if (next_pos >= rd.len || page + 1 >= PAGE_TAB_MAX)
-                continue;                                     /* last page: nothing to turn to */
-            page++;
-            page_start[page] = next_pos;
-        } else {
-            if (page == 0)
-                continue;
-            page--;
-        }
+        if (!app_key(&app, down ? KEY_NEXT : KEY_BACK))
+            continue;                                         /* first or last page: nothing to turn to */
         turns++;
         tr = now_us();
-        rd.img = (volatile uint8_t *)img_cur;
         fill_words((volatile uint32_t *)img_cur, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);
-        next_pos = rd_page(&rd, page_start[page], 1);
-        rd_footer(&rd, page + 1, next_pos);
+        app_paint(&app, (volatile uint8_t *)img_cur);
         uint32_t paint_ms = (now_us() - tr) / 1000u;
         show(0);
-        lg(T_READ | 0x10 | (uint32_t)(down ? 0 : 1), (page << 20) | (paint_ms << 10) | (((now_us() - tr) / 1000u) & 0x3FF));
+        lg(T_READ | 0x10 | (uint32_t)(down ? 0 : 1), (app.page << 20) | (paint_ms << 10) | (((now_us() - tr) / 1000u) & 0x3FF));
         /* wait for the button to be let go (or both pressed -> handled next round) */
         uint64_t w = ticks();
         while ((ticks() - w) / 24000u < 3000u) {

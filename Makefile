@@ -24,3 +24,10 @@ clean:
 	rm -rf build
 
 .PHONY: clean
+
+# PC simulator: same reader code, pictures instead of a screen.
+#   make sim && build/sim book.txt nnnb out
+sim:
+	@mkdir -p build
+	cc -O2 -Wall -Wextra tools/sim/sim.c -o build/sim
+.PHONY: sim
