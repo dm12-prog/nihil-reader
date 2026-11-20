@@ -90,9 +90,7 @@ static void pin_write(int port, int pin, int v)
 static int pin_read(int port, int pin) { return (REG32(port_base(port) + 0x10) >> pin) & 1; }
 
 /* ---------- bit-banged I2C on PH2 (clock) / PH3 (data) = Kobo's "twi1" ---------- */
-#define I2C_PORT 7
-#define I2C_SCL  2
-#define I2C_SDA  3
+static int I2C_PORT = 7, I2C_SCL = 2, I2C_SDA = 3;           /* chosen by i2c_find_pmic() */
 static void i2c_delay(void) { sleep_us(5); }                 /* ~100 kHz */
 static void scl(int hi) { pin_mode(I2C_PORT, I2C_SCL, hi ? 0 : 1); i2c_delay(); }
 static void sda(int hi) { pin_mode(I2C_PORT, I2C_SDA, hi ? 0 : 1); i2c_delay(); }
@@ -150,6 +148,44 @@ static int pmic_write(uint8_t reg, uint8_t val)               /* 1 = ok */
     int ok = i2c_tx(SY7636_ADDR << 1) && i2c_tx(reg) && i2c_tx(val);
     i2c_stop();
     return ok;
+}
+
+/* The published board file says the power chip is on twi1 (PH2/PH3), but this
+ * board (D00) has surprised us before. So: look at every I2C bus the chip
+ * could be on, list who answers, and use the bus where 0x62 answers.
+ * A probe is only "start, address, stop": it changes nothing in any chip. */
+static int i2c_find_pmic(void)
+{
+    static const uint8_t bus[][3] = { {7, 2, 3}, {7, 0, 1}, {4, 1, 2} };   /* port, clock pin, data pin */
+    int found = -1;
+    for (unsigned b = 0; b < 3; b++) {
+        I2C_PORT = bus[b][0]; I2C_SCL = bus[b][1]; I2C_SDA = bus[b][2];
+        uint32_t cfg = REG32(port_base(I2C_PORT));           /* remember the pin functions */
+        i2c_init();
+        lg(T_PMIC | 0x100u * (b + 1), (uint32_t)(pin_read(I2C_PORT, I2C_SCL) | pin_read(I2C_PORT, I2C_SDA) << 1));
+        uint32_t n = 0;
+        for (uint8_t a = 0x08; a < 0x78; a++) {
+            i2c_start();
+            int ack = i2c_tx((uint8_t)(a << 1));
+            i2c_stop();
+            if (ack) {
+                if (n < 12)
+                    lg(T_PMIC | 0x100u * (b + 1) | (0x10 + n), a);
+                n++;
+                if (a == SY7636_ADDR && found < 0)
+                    found = (int)b;
+            }
+        }
+        lg(T_PMIC | 0x100u * (b + 1) | 1, n);
+        if (found != (int)b)
+            REG32(port_base(I2C_PORT)) = cfg;                 /* not ours: put the pins back */
+        wdt_feed();
+    }
+    if (found >= 0) {
+        I2C_PORT = bus[found][0]; I2C_SCL = bus[found][1]; I2C_SDA = bus[found][2];
+    }
+    lg(T_PMIC | 0x10, (uint32_t)found);
+    return found;
 }
 
 /* ---------- boot parameters (written by the loader module) ---------- */
@@ -337,7 +373,10 @@ __attribute__((noreturn)) int main(void)
         lg(T_WF | o, rd32(WAVEFORM_PHYS + o));
     for (uint32_t o = 0; o < 16; o += 4)
         lg(T_WF | 0x80 | o, rd32(WAVEFORM_PHYS + 128 + o));  /* temperature table */
-    i2c_init();
+    lg(T_PMIC | 0x20, REG32(PIO_BASE + 4 * 0x24 + 0x10));    /* port E: PE4/PE5 = chip awake? */
+    lg(T_PMIC | 0x21, REG32(PIO_BASE + 7 * 0x24 + 0x10));    /* port H */
+    lg(T_PMIC | 0x22, REG32(PIO_BASE + 1 * 0x24 + 0x10));    /* port B */
+    int pmic_bus = i2c_find_pmic();
     int reg[9];
     for (int r = 0; r < 9; r++) {
         reg[r] = pmic_read((uint8_t)r);
@@ -466,6 +505,8 @@ __attribute__((noreturn)) int main(void)
 
     if (!p_drive)
         finish(END_REHEARSAL_OK);
+    if (pmic_bus < 0)
+        finish(END_NO_PMIC);
 
     /* --- 7. DRIVE: power the panel and play the frames --- */
     stage(8);
