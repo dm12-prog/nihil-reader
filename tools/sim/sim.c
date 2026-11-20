@@ -4,7 +4,8 @@
  *
  *   sim <library folder> <keys> <out prefix> [rot]
  *     keys: n = lower button (next), b = upper button (back),
- *           N = hold lower button, B = hold upper button
+ *           N = hold lower button, B = hold upper button,
+ *           c = close the cover, o = open the cover
  *     writes <prefix>-000.pgm (first screen), <prefix>-001.pgm (after key 1) ...
  *     Pictures are written upright (the way the reader holds the device).
  *
@@ -89,6 +90,7 @@ static void save(const struct app *a, const char *prefix, int n, char key)
     printf("%s: key '%c' -> %s", name, key, views[a->view]);
     if (a->view == VIEW_BOOK) printf(" \"%s\" page %u", a->title, a->page + 1);
     if (a->view == VIEW_FILES) printf(" \"%s\" %u entries, chosen %u", a->path, a->count, a->sel);
+    if (a->asleep) printf(" [asleep]");
     printf("\n");
 }
 
@@ -106,6 +108,7 @@ int main(int argc, char **argv)
     save(&a, argv[3], 0, '-');
     int n = 1;
     for (const char *k = argv[2]; *k; k++, n++) {
+        if (*k == 'c' || *k == 'o') { app_cover(&a, *k == 'c'); save(&a, argv[3], n, *k); continue; }
         enum app_key key = *k == 'n' ? KEY_NEXT : *k == 'b' ? KEY_BACK : *k == 'N' ? KEY_NEXT_HOLD : KEY_BACK_HOLD;
         int r = app_key(&a, key);
         if (r == APP_LEAVE) { printf("leave requested\n"); break; }

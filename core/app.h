@@ -9,6 +9,10 @@
  *   lists:    short press = move down / up; hold the lower button = choose;
  *             hold the upper button = go back
  *
+ * Cover: closing it puts Nihil to sleep (buttons ignored, light off), opening
+ * it wakes it up where it was. The page stays on the screen: e-ink needs no
+ * power to keep showing it.
+ *
  * The platform supplies three services (see the hal_ functions below).
  */
 #pragma once
@@ -56,6 +60,7 @@ struct app {
     char path[APP_PATH_MAX];
     struct app_entry entries[APP_ENTRIES];
     uint32_t count, sel, top;
+    int asleep;                             /* cover closed */
     char note[APP_NAME_MAX + 32];           /* one-line message, e.g. why a book did not open */
 };
 
@@ -134,7 +139,7 @@ static void app_init(struct app *a, const struct app_mem *m, uint32_t pw, uint32
     a->m = *m;
     a->have_book = 0; a->title[0] = 0; a->note[0] = 0;
     a->page = 0; a->next_pos = 0;
-    a->menu_sel = 0; a->light = 0; a->warmth = 0;
+    a->menu_sel = 0; a->light = 0; a->warmth = 0; a->asleep = 0;
     a->path[0] = 0;
     a->view = VIEW_FILES;
     app_load_dir(a);
@@ -233,9 +238,21 @@ static void app_step(uint32_t *v, int up)                 /* next / previous lig
     *v = app_levels[i];
 }
 
+/* The cover was closed (1) or opened (0). Nothing needs repainting. */
+static void app_cover(struct app *a, int closed)
+{
+    if (closed == a->asleep)
+        return;
+    a->asleep = closed;
+    if (closed) hal_set_light(0, 0);
+    else hal_set_light(a->light, a->warmth);
+}
+
 /* A button event. Returns APP_SAME, APP_REDRAW or APP_LEAVE. */
 static int app_key(struct app *a, enum app_key k)
 {
+    if (a->asleep)
+        return APP_SAME;                                  /* a button squeezed inside a closed cover does nothing */
     if (a->view == VIEW_BOOK) {
         if (k == KEY_NEXT) {
             if (a->next_pos >= a->rd.len || a->page + 1 >= a->m.pages_max)

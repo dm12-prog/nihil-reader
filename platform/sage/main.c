@@ -696,16 +696,34 @@ __attribute__((noreturn)) int main(void)
     show(1);
     stage(8);
 
+    /* Cover sensor: Nihil is started by a tap on the screen, so the cover is
+     * open right now. Whatever the sensor says now means "open". */
+    uint32_t hall_open = (REG32(R_PIO_BASE + 0x10) >> HALL_PIN) & 1u;
+    lg(T_READ | 0x40, hall_open);
     uint64_t idle_from = ticks();
     for (;;) {
         wdt_feed();
         uint32_t l = REG32(R_PIO_BASE + 0x10);
+        int closed = ((l >> HALL_PIN) & 1u) != hall_open;
+        if (closed != app.asleep) {
+            sleep_us(150000);                                 /* must hold for 150 ms: no flicker from a passing magnet */
+            l = REG32(R_PIO_BASE + 0x10);
+            if ((((l >> HALL_PIN) & 1u) != hall_open) == closed) {
+                app_cover(&app, closed);
+                lg(T_READ | 0x41, ((uint32_t)closed << 31) | (now_us() / 1000000u));
+                idle_from = ticks();
+            }
+            continue;
+        }
         int down = !((l >> BTN_NEXT_PIN) & 1), up = !((l >> BTN_BACK_PIN) & 1);
-        if ((ticks() - idle_from) / 24000000u >= 600u) {      /* 10 minutes without a press: leave */
+        /* Leave after 10 minutes without a press. This also covers a closed
+         * cover: Nihil has no low-power sleep yet, so it hands back to Kobo's
+         * own software, which does. */
+        if ((ticks() - idle_from) / 24000000u >= 600u) {
             lg(T_READ | 2, turns);
             break;
         }
-        if (!down && !up)
+        if ((!down && !up) || app.asleep)
             continue;
         sleep_us(40000);                                      /* still pressed after 40 ms = a real press */
         l = REG32(R_PIO_BASE + 0x10);
