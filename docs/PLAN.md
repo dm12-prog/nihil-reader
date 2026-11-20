@@ -19,6 +19,27 @@ Known gap: Kobo's kernel checks each module's symbol "fingerprints"
 (`CONFIG_MODVERSIONS=y`). We fix that by matching them to a module already on the
 device (e.g. `/drivers/b300-ntx/g_ether.ko`) or to a full build of Kobo's kernel.
 
+## Where things stand (20 Nov 2026)
+
+"On the Kobo" = ran on Diogo's Sage. "PC only" = written and tested on a
+computer (simulator or stand-in hardware), not yet run on the Kobo.
+
+| Piece | State |
+|---|---|
+| Start without Linux, timer, buttons, black-box log, reboot | On the Kobo (milestone 1) |
+| Draw on the e-ink screen (16 greys, full refresh) | On the Kobo (milestone 2) |
+| Page turning, portrait, real text, Libron font | On the Kobo (tests 3a-3d) |
+| EPUB reader, library browser, menu, cover = soft sleep | PC only (simulator), builds for the Sage |
+| FAT32 reader (`core/fat.h`, `core/library.h`) | PC only, tested on disk images (MBR, GPT, long and accented names) |
+| Storage chip driver, read-only (`platform/sage/mmc.h`) | PC only, 22 checks against a stand-in chip (`make mmc-test`) |
+| Frontlight (`platform/sage/light.h`) | PC only, 22 checks with Kobo's real table file (`make light-test`) |
+| Core naps while waiting (WFE + timer event stream) | Written, cannot be tested on a PC |
+| Cable link for development (USB network + SSH) | Scripts written, not installed |
+| Real low-power sleep (RAM self-refresh), saving the reading position, direct boot | Not started |
+
+Each new piece has its own switch in `tools/kobo/run-test1.sh` (STORE, LIGHT,
+NAP), so it can be tried alone and switched off again.
+
 ## Milestone 1: Hello, Sage
 
 Proves: our code runs with no Linux.

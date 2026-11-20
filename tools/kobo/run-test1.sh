@@ -4,6 +4,7 @@
 DRIVE=1
 ROT=1           # page direction on the panel: 1 or 3 = portrait (one of them is upside down), 0 = landscape
 MODE=1          # 1 = GC16 (full 16-grey update), 3 = DU (fast black/white)
+NAP=1           # 1 = the processor core stands still while Nihil waits for a button, 0 = it runs flat out as before
 LIGHT=1         # 1 = Nihil drives the frontlight (menu: Light, Warmth), 0 = it leaves the light chips alone
 STORE=1         # 1 = Nihil reads the book library straight from the Kobo's storage chip (read-only), 0 = only the one book handed over in RAM
 D=/mnt/onboard/.adds/nihil
@@ -80,7 +81,7 @@ elif [ "$PMN" = 0 ] && [ -s "$D/pmic.cfg" ]; then
   echo "no rails-on sample this time: using remembered settings"
 fi
 echo "power chip settings: distinct=$PMN -> $PM1,$PM2 (vcom reg=$1 $2)"
-ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE},${LIGHT}"
+ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE},${LIGHT},${NAP}"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20

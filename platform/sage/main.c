@@ -49,6 +49,41 @@ static void wdt_arm(uint32_t interval_code)        /* 0xB = 16 s, 6 = 6 s, 0 = 0
 }
 static void wdt_feed(void) { REG32(WDT_CTRL) = (1u << 0) | (0x0A57u << 1); }
 
+/* ---------- napping: let the processor core stand still while it waits ----------
+ * Until now every wait was a busy loop: the core ran flat out just to watch
+ * the clock. "WFE" (wait for event) stops the core until something happens.
+ * The something is the timer's "event stream": the ARM generic timer can tick
+ * the core awake every time one chosen bit of its counter flips (ARM
+ * Architecture Reference Manual ARMv7-A, B8.1.5 "Event streams", register
+ * CNTKCTL; Linux uses the same thing, CONFIG_ARM_ARCH_TIMER_EVTSTREAM).
+ * Bit 13 of the 24 MHz counter gives one tick every 0.68 ms.
+ * No interrupts are involved, so nothing can get stuck: if the event stream
+ * did not work, WFE would just return at once and this is a busy loop again. */
+static int g_nap;
+static uint32_t g_nap_wakes, g_nap_was, g_nap_test;
+static void nap_setup(void)
+{
+    uint32_t k;
+    __asm__ volatile("mrc p15, 0, %0, c14, c1, 0" : "=r"(k));          /* CNTKCTL */
+    uint32_t was = k;
+    k = (k & ~0xFCu) | (13u << 4) | (1u << 2);                         /* EVNTI = 13, EVNTDIR = 0, EVNTEN = 1 */
+    __asm__ volatile("mcr p15, 0, %0, c14, c1, 0; isb" : : "r"(k));
+    /* Try it: wait 20 ms with WFE and count how often the core woke up.
+     * About 29 wake-ups = it really stood still in between. Thousands = WFE
+     * returns at once on this chip, so napping would save nothing. */
+    uint64_t end = ticks() + 20000u * 24u;
+    uint32_t n = 0;
+    while (ticks() < end) { __asm__ volatile("wfe"); n++; }
+    g_nap = n >= 5 && n <= 200;
+    g_nap_was = was; g_nap_test = n;
+}
+static void nap_us(uint32_t us)
+{
+    if (!g_nap) { sleep_us(us); return; }
+    uint64_t end = ticks() + (uint64_t)us * 24u;
+    while (ticks() < end) { __asm__ volatile("wfe"); g_nap_wakes++; }
+}
+
 __attribute__((noreturn)) static void reboot(void)
 {
     wdt_arm(0);
@@ -640,6 +675,7 @@ __attribute__((noreturn)) int main(void)
     uint32_t p_rot = pr[1] >= 16 ? pr[17] & 3u : 0;           /* how the page sits on the panel */
     uint32_t p_store = pr[1] >= 17 ? pr[18] : 0;              /* 1 = read books from the Kobo's storage */
     uint32_t p_light = pr[1] >= 18 ? pr[19] : 0;              /* 1 = drive the frontlight chips */
+    uint32_t p_nap = pr[1] >= 19 ? pr[20] : 0;                /* 1 = let the core stand still while waiting */
     /* The book (plain text) sits somewhere in what was Linux's memory: move it
      * to our own corner before we start using RAM for pictures. */
     uint32_t book_src = pr[32], book_len = pr[33];
@@ -653,7 +689,7 @@ __attribute__((noreturn)) int main(void)
         else
             for (uint32_t i = book_len; i-- > 0;) { d[i] = sr[i]; if (!(i & 0xFFFF)) wdt_feed(); }
     }
-    for (int i = 2; i < 20; i++)
+    for (int i = 2; i < 21; i++)
         lg(T_PARAM | (uint32_t)i, pr[i]);
     pr[0] = 0;                                                /* one-shot */
     LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
@@ -803,13 +839,20 @@ __attribute__((noreturn)) int main(void)
      * open right now. Whatever the sensor says now means "open". */
     uint32_t hall_open = (REG32(R_PIO_BASE + 0x10) >> HALL_PIN) & 1u;
     lg(T_READ | 0x40, hall_open);
+    if (p_nap) {
+        nap_setup();
+        lg(T_READ | 0x50, g_nap_was);                         /* timer control register as Linux left it */
+        lg(T_READ | 0x51, g_nap_test);                        /* wake-ups in the 20 ms try-out (about 29 = good) */
+        lg(T_READ | 0x52, (uint32_t)g_nap);
+    }
     uint64_t idle_from = ticks();
     for (;;) {
         wdt_feed();
+        nap_us(app.asleep ? 50000u : 10000u);                 /* look at the buttons 100 times a second (20 with the cover closed) */
         uint32_t l = REG32(R_PIO_BASE + 0x10);
         int closed = ((l >> HALL_PIN) & 1u) != hall_open;
         if (closed != app.asleep) {
-            sleep_us(150000);                                 /* must hold for 150 ms: no flicker from a passing magnet */
+            nap_us(150000);                                   /* must hold for 150 ms: no flicker from a passing magnet */
             l = REG32(R_PIO_BASE + 0x10);
             if ((((l >> HALL_PIN) & 1u) != hall_open) == closed) {
                 app_cover(&app, closed);
@@ -828,7 +871,7 @@ __attribute__((noreturn)) int main(void)
         }
         if ((!down && !up) || app.asleep)
             continue;
-        sleep_us(40000);                                      /* still pressed after 40 ms = a real press */
+        nap_us(40000);                                        /* still pressed after 40 ms = a real press */
         l = REG32(R_PIO_BASE + 0x10);
         int down2 = !((l >> BTN_NEXT_PIN) & 1), up2 = !((l >> BTN_BACK_PIN) & 1);
         if (down2 && up2) {                                   /* both buttons: leave (development exit) */
@@ -847,6 +890,7 @@ __attribute__((noreturn)) int main(void)
             if (!d3 && !u3) break;
             if ((ticks() - w) / 24000u >= HOLD_MS) { held = 1; break; }
             wdt_feed();
+            nap_us(5000);
         }
         if (both) {
             lg(T_READ | 3, turns);
@@ -875,9 +919,12 @@ __attribute__((noreturn)) int main(void)
             if (((l >> BTN_NEXT_PIN) & 1) && ((l >> BTN_BACK_PIN) & 1))
                 break;
             wdt_feed();
+            nap_us(5000);
         }
         idle_from = ticks();
     }
+    lg(T_READ | 0x53, g_nap_wakes);
+    mmc_log_stats();
     stage(9);
     finish(END_DRAWN_OK);
 }
