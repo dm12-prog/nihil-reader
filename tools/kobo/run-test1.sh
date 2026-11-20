@@ -11,13 +11,16 @@ md5sum "$D/sage.bin" "$D/nihil_chainload.ko"
 
 # Panel timing from the live device tree (big-endian 32-bit numbers).
 dt() {
-  f=$(find /proc/device-tree -name "$1" 2>/dev/null | head -1)
+  # /proc/device-tree is a symbolic link: the trailing slash makes find go inside it
+  f=$(find /proc/device-tree/ /sys/firmware/devicetree/base/ -name "$1" 2>/dev/null | head -1)
   [ -n "$f" ] || { echo ""; return; }
   set -- $(hexdump -v -e '4/1 "%u "' "$f" 2>/dev/null)
   [ $# -ge 4 ] || set -- $(od -An -tu1 "$f" 2>/dev/null)
   [ $# -ge 4 ] || { echo ""; return; }
   echo $(( ($1 << 24) | ($2 << 16) | ($3 << 8) | $4 ))
 }
+ls -ld /proc/device-tree /sys/firmware/devicetree/base 2>&1
+find /proc/device-tree/ -name "eink_*" 2>&1 | head -30
 ARGS=""
 for k in eink_lsl eink_lbl eink_ldl eink_lel eink_gdck_sta eink_lgonl eink_fsl eink_fbl eink_fdl eink_fel; do
   v=$(dt $k)
