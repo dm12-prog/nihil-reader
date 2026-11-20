@@ -10,6 +10,9 @@
  */
 #pragma once
 #include <stdint.h>
+
+struct glyph { uint16_t cp; uint8_t w, h; int8_t xoff, yoff; uint8_t adv; uint32_t off; };
+struct font { uint32_t size, ascent, descent, nglyphs; const struct glyph *glyphs; const uint8_t *ink; };
 #include "font_data.h"
 
 struct reader {
@@ -18,6 +21,9 @@ struct reader {
     const uint8_t *text;        /* the book */
     uint32_t len;
     uint32_t margin_x, margin_top, margin_bottom, line_h, indent;
+    uint32_t footer_h;          /* room kept under the text for the footer line */
+    int justify;                /* 1 = stretch lines to both margins, 0 = ragged right */
+    const struct font *body, *small;
 };
 
 static uint32_t rd_page_w(const struct reader *r) { return (r->rot & 1) ? r->ph : r->pw; }
@@ -40,16 +46,16 @@ static void rd_ink(const struct reader *r, uint32_t x, uint32_t y, uint32_t ink)
         *p = v;
 }
 
-static const struct glyph *rd_glyph(uint32_t cp)
+static const struct glyph *rd_glyph(const struct font *f, uint32_t cp)
 {
     if (cp >= 32 && cp < 127)
-        return &font_glyphs[cp - 32];
+        return &f->glyphs[cp - 32];
     if (cp >= 160 && cp < 256)
-        return &font_glyphs[95 + cp - 160];
-    for (uint32_t i = 191; i < FONT_GLYPHS; i++)
-        if (font_glyphs[i].cp == cp)
-            return &font_glyphs[i];
-    return &font_glyphs['?' - 32];
+        return &f->glyphs[95 + cp - 160];
+    for (uint32_t i = 191; i < f->nglyphs; i++)
+        if (f->glyphs[i].cp == cp)
+            return &f->glyphs[i];
+    return &f->glyphs['?' - 32];
 }
 
 /* Reads one character (UTF-8) at *pos and moves *pos past it. */
@@ -69,10 +75,10 @@ static uint32_t rd_next(const struct reader *r, uint32_t *pos)
     return c;
 }
 
-static uint32_t rd_draw_cp(const struct reader *r, uint32_t x, uint32_t y, uint32_t cp)
+static uint32_t rd_draw_cp(const struct reader *r, const struct font *f, uint32_t x, uint32_t y, uint32_t cp)
 {
-    const struct glyph *g = rd_glyph(cp);
-    const uint8_t *ink = &font_ink[g->off];
+    const struct glyph *g = rd_glyph(f, cp);
+    const uint8_t *ink = &f->ink[g->off];
     for (uint32_t gy = 0; gy < g->h; gy++)
         for (uint32_t gx = 0; gx < g->w; gx++) {
             uint32_t v = ink[gy * g->w + gx];
@@ -82,17 +88,17 @@ static uint32_t rd_draw_cp(const struct reader *r, uint32_t x, uint32_t y, uint3
     return g->adv;
 }
 
-static uint32_t rd_draw_ascii(const struct reader *r, uint32_t x, uint32_t y, const char *s)
+static uint32_t rd_draw_ascii(const struct reader *r, const struct font *f, uint32_t x, uint32_t y, const char *s)
 {
     for (; *s; s++)
-        x += rd_draw_cp(r, x, y, (uint8_t)*s);
+        x += rd_draw_cp(r, f, x, y, (uint8_t)*s);
     return x;
 }
-static uint32_t rd_width_ascii(const char *s)
+static uint32_t rd_width_ascii(const struct font *f, const char *s)
 {
     uint32_t w = 0;
     for (; *s; s++)
-        w += rd_glyph((uint8_t)*s)->adv;
+        w += rd_glyph(f, (uint8_t)*s)->adv;
     return w;
 }
 
@@ -121,8 +127,8 @@ static uint32_t rd_line(const struct reader *r, uint32_t pos, uint32_t y, int dr
             p = q;
             continue;
         }
-        uint32_t add = rd_glyph(c)->adv, sp = 0;
-        if (in_space && used > 0) { sp = rd_glyph(' ')->adv; }
+        uint32_t add = rd_glyph(r->body, c)->adv, sp = 0;
+        if (in_space && used > 0) { sp = rd_glyph(r->body, ' ')->adv; }
         if (used + sp + add > width) {
             if (brk == pos && used > 0) { brk = p; brk_used = used; brk_gaps = gaps; }   /* one very long word: cut it */
             break;
@@ -139,7 +145,7 @@ static uint32_t rd_line(const struct reader *r, uint32_t pos, uint32_t y, int dr
     if (ended || p >= r->len) {
         end = p; next = p;                                /* last line of a paragraph: not stretched */
     } else if (brk != pos) {
-        end = brk; next = brk; used = brk_used; gaps = brk_gaps; justify = 1;
+        end = brk; next = brk; used = brk_used; gaps = brk_gaps; justify = r->justify;
     } else {
         end = p; next = p;                                /* nothing fitted (cannot happen with sane margins) */
         if (end == pos) { uint32_t q = pos; rd_next(r, &q); next = q; }
@@ -160,7 +166,7 @@ static uint32_t rd_line(const struct reader *r, uint32_t pos, uint32_t y, int dr
             continue;
         if (c == ' ') { in_space = 1; continue; }
         if (in_space && !first) {
-            x += rd_glyph(' ')->adv;
+            x += rd_glyph(r->body, ' ')->adv;
             if (extra) {                                  /* share the spare width between the gaps */
                 gap_i++;
                 uint32_t want = extra * gap_i / gaps;
@@ -169,7 +175,7 @@ static uint32_t rd_line(const struct reader *r, uint32_t pos, uint32_t y, int dr
             }
         }
         in_space = 0; first = 0;
-        x += rd_draw_cp(r, x, y, c);
+        x += rd_draw_cp(r, r->body, x, y, c);
     }
     return next;
 }
@@ -178,7 +184,7 @@ static uint32_t rd_line(const struct reader *r, uint32_t pos, uint32_t y, int dr
  * draw = 0). Returns the offset where the following page starts. */
 static uint32_t rd_page(const struct reader *r, uint32_t pos, int draw)
 {
-    uint32_t y = r->margin_top, bottom = rd_page_h(r) - r->margin_bottom;
+    uint32_t y = r->margin_top, bottom = rd_page_h(r) - r->margin_bottom - r->footer_h;
     while (y + r->line_h <= bottom && pos < r->len) {
         /* skip empty lines at the top of a page and between paragraphs */
         if (r->text[pos] == '\n' || r->text[pos] == '\r') { pos++; continue; }
@@ -201,16 +207,21 @@ static char *rd_utoa(uint32_t n, char *end)                 /* writes backwards 
 static void rd_footer(const struct reader *r, uint32_t page_no, uint32_t pos)
 {
     char b[16], s[32];
-    uint32_t y = rd_page_h(r) - r->margin_bottom + 30, n = 0;
-    rd_draw_ascii(r, r->margin_x, y, rd_utoa(page_no, b + sizeof b));
-    uint32_t pct = r->len ? (pos / 64u * 100u) / (r->len / 64u + 1u) : 0;   /* 32-bit maths only */
+    uint32_t y = rd_page_h(r) - r->margin_bottom - r->small->ascent - r->small->descent, n = 0;
+    rd_draw_ascii(r, r->small, r->margin_x, y, rd_utoa(page_no, b + sizeof b));
+    uint32_t pct = pos >= r->len ? 100u : (pos / 64u * 100u) / (r->len / 64u + 1u);   /* 32-bit maths only */
     for (const char *t = rd_utoa(pct, b + sizeof b); *t; t++) s[n++] = *t;
     s[n++] = '%'; s[n] = 0;
-    rd_draw_ascii(r, rd_page_w(r) - r->margin_x - rd_width_ascii(s), y, s);
+    rd_draw_ascii(r, r->small, rd_page_w(r) - r->margin_x - rd_width_ascii(r->small, s), y, s);
 }
 
+/* Page look copied from Diogo's Kobalt settings (reader-settings.json on his
+ * Kobo, 20 Nov 2026): Libron 46 px, line spacing 150 %, left aligned, no
+ * hyphenation, side margins 51 px, top and bottom margins 27 px. */
 static void rd_defaults(struct reader *r)
 {
-    r->margin_x = 110; r->margin_top = 110; r->margin_bottom = 130;
-    r->line_h = 62; r->indent = 46;
+    r->body = &font_body; r->small = &font_small;
+    r->margin_x = 51; r->margin_top = 27; r->margin_bottom = 27;
+    r->line_h = 69; r->indent = 46; r->justify = 0;
+    r->footer_h = 60;
 }
