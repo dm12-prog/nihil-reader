@@ -23,8 +23,8 @@ enum app_key { KEY_NEXT, KEY_BACK, KEY_NEXT_HOLD, KEY_BACK_HOLD };
 enum app_view { VIEW_BOOK, VIEW_MENU, VIEW_FILES };
 enum { APP_SAME = 0, APP_REDRAW = 1, APP_LEAVE = 2 };
 
-#define APP_NAME_MAX 160
-#define APP_PATH_MAX 512
+#define APP_NAME_MAX 384           /* long file names: up to 255 characters, more bytes with accents */
+#define APP_PATH_MAX 1024
 #define APP_ENTRIES  512
 
 struct app_entry { char name[APP_NAME_MAX]; uint8_t is_dir; };

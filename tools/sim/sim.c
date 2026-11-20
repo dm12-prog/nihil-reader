@@ -2,7 +2,9 @@
  * Nihil simulator: runs the reader on a PC and writes what the screen would
  * show after each button press.
  *
- *   sim <library folder> <keys> <out prefix> [rot]
+ *   sim <library folder | disk image> <keys> <out prefix> [rot]
+ *     A disk image (FAT32, as the Kobo's book storage is) goes through Nihil's
+ *     own FAT32 code; a folder is read with the PC's file functions.
  *     keys: n = lower button (next), b = upper button (back),
  *           N = hold lower button, B = hold upper button,
  *           c = close the cover, o = open the cover
@@ -12,17 +14,26 @@
  * It simulates the screen's size, the two buttons and a folder of books.
  * It does NOT simulate the Sage's hardware (e-ink waveforms, power chip, storage).
  */
+#define _FILE_OFFSET_BITS 64
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include "../../core/app.h"
+#include "../../core/library.h"
 
 #define PW 1920
 #define PH 1440
 static uint8_t img[PW * PH];
 static const char *root;
+static FILE *image;                                    /* set when the library is a disk image */
+
+static int hal_blk_read(uint32_t lba, uint32_t count, uint8_t *buf)
+{
+    if (fseeko(image, (off_t)lba * 512, SEEK_SET)) return -1;
+    return fread(buf, 512, count, image) == count ? 0 : -1;
+}
 
 static int is_book(const char *n)
 {
@@ -32,12 +43,13 @@ static int is_book(const char *n)
 static int hal_list_dir(const char *path, struct app_entry *out, int max)
 {
     char full[2048];
+    if (image) return lib_list_dir(path, out, max);
     snprintf(full, sizeof full, "%s/%s", root, path);
     DIR *d = opendir(full);
     if (!d) return -1;
     int n = 0;
     for (struct dirent *e; (e = readdir(d)) && n < max;) {
-        char p[4096];
+        char p[8192];
         struct stat st;
         if (e->d_name[0] == '.') continue;
         snprintf(p, sizeof p, "%s/%s", full, e->d_name);
@@ -53,6 +65,7 @@ static int hal_list_dir(const char *path, struct app_entry *out, int max)
 static int hal_read_file(const char *path, uint8_t *buf, uint32_t max, uint32_t *len)
 {
     char full[2048];
+    if (image) return lib_read_file(path, buf, max, len);
     snprintf(full, sizeof full, "%s/%s", root, path);
     FILE *f = fopen(full, "rb");
     if (!f) return -1;
@@ -98,6 +111,11 @@ int main(int argc, char **argv)
 {
     if (argc < 4) { fprintf(stderr, "usage: sim <library folder> <keys> <out prefix> [rot]\n"); return 1; }
     root = argv[1];
+    struct stat st;
+    if (!stat(root, &st) && S_ISREG(st.st_mode)) {
+        image = fopen(root, "rb");
+        printf("disk image: FAT32 %s\n", image && lib_mount() == 0 ? "found" : "NOT found");
+    }
     static uint8_t file[64 << 20], work[32 << 20], text[64 << 20];
     static uint32_t pages[1 << 20];
     static struct app a;
