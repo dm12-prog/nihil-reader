@@ -31,6 +31,19 @@ done
 for k in eink_width eink_height eink_bits eink_mode eink_fresh_hz lcd_dclk_freq lcd_ht lcd_vt lcd_hbp lcd_vbp lcd_hspw lcd_vspw; do
   echo "device tree $k = '$(dt $k)'"
 done
+# The kernel in this Kobo does not use the device tree's fsl/fbl as they are.
+# Ask the running kernel for the numbers it really uses (read-only search).
+echo "--- timing really used by the running kernel ---"
+insmod "$D/nihil_chainload.ko" findtiming=1 args="$ARGS"0
+dmesg | grep "nihil-tm"
+N=$(dmesg | grep "nihil-tm-ok:" | sed 's/.*nihil-tm-ok: //' | sort -u | wc -l)
+LIVE=$(dmesg | grep "nihil-tm-ok:" | sed 's/.*nihil-tm-ok: //' | sort -u | head -1 | tr ' ' ',')
+echo "timings that match the engine registers: $N, first: $LIVE"
+if [ "$N" = 1 ] && [ -n "$LIVE" ]; then
+  ARGS="$LIVE,"
+else
+  echo "no single matching timing found: not starting Nihil"; rmdir /tmp/nihil.lock; sync; exit 1
+fi
 ARGS="${ARGS}${DRIVE},${MODE},0"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline

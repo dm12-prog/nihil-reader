@@ -42,6 +42,10 @@ static int nargs;
 module_param_array(args, int, &nargs, 0444);
 MODULE_PARM_DESC(args, "numbers handed to the image (boot parameters), stored at 0x5FA08000");
 
+static int findtiming;
+module_param(findtiming, int, 0444);
+MODULE_PARM_DESC(findtiming, "1 = find the screen timing the running kernel really uses (read-only memory search), print it, then fail to load");
+
 static int regdump;
 module_param(regdump, int, 0444);
 MODULE_PARM_DESC(regdump, "1 = watch the screen hardware registers for ~4 s from inside Linux (read-only), print them, then fail to load");
@@ -207,6 +211,82 @@ static int nihil_regdump(void)
 	return -EAGAIN;
 }
 
+/*
+ * findtiming: the running kernel keeps the panel timing in a struct
+ * eink_panel_info (disp2/disp/de/include.h): ... lsl lbl ldl lel gdck_sta lgonl
+ * fsl fbl fdl fel. The device tree gives the first six; the kernel in this
+ * Kobo uses different fsl/fbl than its device tree says. So: search kernel
+ * memory for the six known numbers and print the four that follow.
+ * Read-only, and every read goes through probe_kernel_read (cannot crash).
+ */
+static long (*pkr)(void *dst, const void *src, size_t size);
+static int tm_hits;
+static u32 tm_live_top, tm_live_lines;      /* from the engine registers Linux is using right now */
+
+static void nihil_scan(const u32 *start, size_t words, int depth)
+{
+	static u32 page[1024];
+	size_t i, k;
+
+	for (i = 0; i < words; i += 1008) {
+		if (pkr(page, start + i, sizeof(page)))
+			continue;
+		for (k = 0; k + 10 <= 1024; k++) {
+			if (args[0] > 0 && page[k] == args[0] && page[k + 1] == args[1] && page[k + 2] == args[2] &&
+			    page[k + 3] == args[3] && page[k + 4] == args[4] && page[k + 5] == args[5] &&
+			    page[k + 8] == args[8] && tm_hits < 12) {
+				pr_info("nihil-tm: at %p depth %d: %u %u %u %u %u %u %u %u %u %u\n", start + i + k, depth,
+					page[k], page[k + 1], page[k + 2], page[k + 3], page[k + 4], page[k + 5],
+					page[k + 6], page[k + 7], page[k + 8], page[k + 9]);
+				if (page[k + 6] + page[k + 7] == tm_live_top &&
+				    page[k + 6] + page[k + 7] + page[k + 8] + page[k + 9] == tm_live_lines)
+					pr_info("nihil-tm-ok: %u %u %u %u %u %u %u %u %u %u\n",
+						page[k], page[k + 1], page[k + 2], page[k + 3], page[k + 4], page[k + 5],
+						page[k + 6], page[k + 7], page[k + 8], page[k + 9]);
+				tm_hits++;
+				k += 9;
+			}
+		}
+	}
+}
+
+static int nihil_findtiming(void)
+{
+	const u32 *sdata = (void *)kallsyms_lookup_name("_sdata");
+	const u32 *end = (void *)kallsyms_lookup_name("_end");
+	void **mgr = (void *)kallsyms_lookup_name("eink_manager");
+	static u32 obj[512];
+	void __iomem *ccu = ioremap(CCU_PHYS, 0x1000), *ee = ioremap(EINK_PHYS, 0x1000);
+	int i;
+
+	if (ccu && ee && (readl(ccu + 0x61C) & 0x10001) == 0x10001) {
+		tm_live_top = readl(ee + 0x414) >> 16;            /* fsl + fbl */
+		tm_live_lines = (readl(ee + 0x410) >> 16) + 1;    /* fsl + fbl + fdl + fel */
+	}
+	pr_info("nihil-tm: engine registers say fsl+fbl=%u, lines per frame=%u\n", tm_live_top, tm_live_lines);
+	if (ccu)
+		iounmap(ccu);
+	if (ee)
+		iounmap(ee);
+	pkr = (void *)kallsyms_lookup_name("probe_kernel_read");
+	if (!pkr || !sdata || !end || nargs < 10) {
+		pr_err("nihil-tm: helpers not found or args missing\n");
+		return -ENOENT;
+	}
+	nihil_scan(sdata, end - sdata, 0);                 /* kernel's own data + bss */
+	if (mgr && !pkr(obj, mgr, 4) && obj[0] >= 0xc0000000) {
+		const u32 *m = (const u32 *)obj[0];
+
+		nihil_scan(m, 4096, 1);                      /* the eink manager object */
+		if (!pkr(obj, m, sizeof(obj)))
+			for (i = 0; i < 512; i++)
+				if (obj[i] >= 0xc0000000 && obj[i] < 0xf0000000 && !(obj[i] & 3))
+					nihil_scan((const u32 *)obj[i], 4096, 2);   /* things it points to */
+	}
+	pr_info("nihil-tm: done, hits=%d\n", tm_hits);
+	return -EAGAIN;
+}
+
 static int __init nihil_init(void)
 {
 	void (*soft_restart_fn)(unsigned long);
@@ -221,6 +301,8 @@ static int __init nihil_init(void)
 		return nihil_readlog();
 	if (regdump)
 		return nihil_regdump();
+	if (findtiming)
+		return nihil_findtiming();
 
 	soft_restart_fn = (void *)kallsyms_lookup_name("soft_restart");
 	freeze_cpus_fn = (void *)kallsyms_lookup_name("freeze_secondary_cpus");
