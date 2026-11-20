@@ -500,14 +500,37 @@ static void show(int verbose)
 }
 
 
+/* ---------- storage: the Kobo's built-in chip, read-only (mmc.h) ---------- */
+static uint32_t mmc_rd(uint32_t off) { return REG32(SMHC2_BASE_ADDR + off); }
+static void mmc_wr(uint32_t off, uint32_t v) { REG32(SMHC2_BASE_ADDR + off) = v; }
+static uint32_t mmc_ccu_rd(uint32_t off) { return REG32(CCU_BASE + off); }
+static uint32_t mmc_time_us(void) { return now_us(); }
+static void mmc_log(uint32_t tag, uint32_t v) { lg(tag, v); }
+static void mmc_feed(void) { wdt_feed(); }
+#include "mmc.h"
+#include "../../core/library.h"
+static int hal_blk_read(uint32_t lba, uint32_t count, uint8_t *buf) { return mmc_read(lba, count, buf); }
+
 /* ---------- services for the reader app (core/app.h) ----------
- * Nihil cannot read the Kobo's storage yet. Until it can, the "library" is the
- * one book file the loader copied into RAM before Linux was stopped. */
+ * Two sources of books:
+ *   - the library on the Kobo's storage, when the storage driver is switched on
+ *     (boot parameter STORE=1) and came up fine;
+ *   - otherwise the one book file the loader copied into RAM before Linux was
+ *     stopped. */
 #define HANDED_NAME "Book from the loader"
 #define HOLD_MS 600u
 static uint32_t g_book_len;
+static int g_lib;                                             /* 1 = library on storage is usable */
+static int name_is_handed(const char *p)
+{
+    const char *h = HANDED_NAME;
+    while (*p && *p == *h) { p++; h++; }
+    return *p == 0 && *h == 0;
+}
 static int hal_list_dir(const char *path, struct app_entry *out, int max)
 {
+    if (g_lib)
+        return lib_list_dir(path, out, max);
     if (path[0] || max < 1 || !g_book_len)
         return 0;
     app_copy(out[0].name, HANDED_NAME, sizeof out[0].name);
@@ -516,7 +539,14 @@ static int hal_list_dir(const char *path, struct app_entry *out, int max)
 }
 static int hal_read_file(const char *path, uint8_t *buf, uint32_t max, uint32_t *len)
 {
-    (void)path;
+    if (g_lib && !name_is_handed(path)) {
+        uint32_t t = now_us();
+        int r = lib_read_file(path, buf, max, len);
+        lg(T_MMC | 0x41, (uint32_t)r);
+        lg(T_MMC | 0x42, now_us() - t);                       /* time to read the file from storage */
+        lg(T_MMC | 0x43, r ? 0 : *len);
+        return r;
+    }
     if (!g_book_len || g_book_len > max)
         return -1;
     const volatile uint8_t *s = (const volatile uint8_t *)BOOK_BUF;
@@ -556,6 +586,7 @@ __attribute__((noreturn)) int main(void)
     p_pm1 = pr[1] >= 15 ? pr[15] : 0;                         /* VCOM_ADJ1 | VCOM_ADJ2<<8 | VLDO_ADJ<<16 */
     p_pm2 = pr[1] >= 15 ? pr[16] : 0;                         /* VEE_VP_EXT | PWRON_DLY<<8 */
     uint32_t p_rot = pr[1] >= 16 ? pr[17] & 3u : 0;           /* how the page sits on the panel */
+    uint32_t p_store = pr[1] >= 17 ? pr[18] : 0;              /* 1 = read books from the Kobo's storage */
     /* The book (plain text) sits somewhere in what was Linux's memory: move it
      * to our own corner before we start using RAM for pictures. */
     uint32_t book_src = pr[32], book_len = pr[33];
@@ -569,7 +600,7 @@ __attribute__((noreturn)) int main(void)
         else
             for (uint32_t i = book_len; i-- > 0;) { d[i] = sr[i]; if (!(i & 0xFFFF)) wdt_feed(); }
     }
-    for (int i = 2; i < 18; i++)
+    for (int i = 2; i < 19; i++)
         lg(T_PARAM | (uint32_t)i, pr[i]);
     pr[0] = 0;                                                /* one-shot */
     LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
@@ -678,6 +709,21 @@ __attribute__((noreturn)) int main(void)
     /* --- 6. the reader app: library, book, menu; driven by the two page buttons --- */
     stage(7);
     g_book_len = book_len;
+    if (p_store) {
+        uint32_t ts = now_us();
+        int r = mmc_attach();
+        if (r == MMC_OK) {
+            r = lib_mount() ? 0x100 : 0;
+            if (!r) {
+                g_lib = 1;
+                lg(T_MMC | 0x24, lib_fat.part_lba);           /* where the book volume starts */
+                lg(T_MMC | 0x25, lib_fat.clusters);
+                lg(T_MMC | 0x26, lib_fat.spc);
+            }
+        }
+        lg(T_MMC | 0x40, (uint32_t)r);                        /* 0 = storage usable */
+        lg(T_MMC | 0x44, now_us() - ts);
+    }
     static struct app app;
     struct app_mem mem = { (uint8_t *)APP_FILE, APP_FILE_MAX, (uint8_t *)APP_WORK, APP_WORK_MAX,
                            (uint8_t *)APP_TEXT, APP_TEXT_MAX, (volatile uint32_t *)PAGE_TAB, PAGE_TAB_MAX };

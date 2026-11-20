@@ -4,6 +4,7 @@
 DRIVE=1
 ROT=1           # page direction on the panel: 1 or 3 = portrait (one of them is upside down), 0 = landscape
 MODE=1          # 1 = GC16 (full 16-grey update), 3 = DU (fast black/white)
+STORE=1         # 1 = Nihil reads the book library straight from the Kobo's storage chip (read-only), 0 = only the one book handed over in RAM
 D=/mnt/onboard/.adds/nihil
 mkdir /tmp/nihil.lock 2>/dev/null || exit 0     # a double tap must not start two runs
 exec > "$D/run.log" 2>&1
@@ -78,13 +79,14 @@ elif [ "$PMN" = 0 ] && [ -s "$D/pmic.cfg" ]; then
   echo "no rails-on sample this time: using remembered settings"
 fi
 echo "power chip settings: distinct=$PMN -> $PM1,$PM2 (vcom reg=$1 $2)"
-ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT}"
+ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE}"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20
 
-# The book to read: an EPUB or a plain text file (at most 4 MB for now).
-# Nihil cannot read the Kobo's storage yet, so the loader copies it into RAM.
+# A book handed over in RAM: an EPUB or a plain text file (at most 4 MB). With
+# STORE=1 Nihil reads the library from storage itself and this is only the
+# fallback if that does not work.
 BOOK=""
 [ -s "$D/book.txt" ] && BOOK="book=$D/book.txt"
 [ -s "$D/book.epub" ] && BOOK="book=$D/book.epub"
@@ -96,8 +98,31 @@ dmesg | grep -i -E "nihil:|version|taint" | tail -12
 if ! dmesg | grep -q "nihil: dry run OK"; then
   echo "DRY RUN FAILED: not starting Nihil"; rmdir /tmp/nihil.lock; sync; exit 1
 fi
+# Storage facts as Linux sees them (read-only), to compare with what Nihil logs.
+echo "--- storage as Linux sees it ---"
+cat /proc/partitions
+mount | grep -E "onboard|mmcblk"
+ls /sys/class/mmc_host/*/ 2>&1
+for f in /sys/block/mmcblk0/device/name /sys/block/mmcblk0/device/type /sys/block/mmcblk0/size /sys/block/mmcblk0/device/rev; do
+  echo "$f: $(cat $f 2>&1)"
+done
+for p in /sys/block/mmcblk0/mmcblk0p*; do echo "$p start=$(cat $p/start) size=$(cat $p/size)"; done
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+cat /sys/kernel/debug/mmc*/ios 2>&1
 echo "--- real run ---"
 sync; sleep 1; sync
+# Ask Linux to hand everything it has already saved over to the storage chip
+# for good (the chip keeps recent saves in a short-term memory of its own).
+# This opens the storage read-only and stores nothing new.
+if fsync /dev/mmcblk0 2>/dev/null; then echo "storage flush: fsync ok"
+elif busybox fsync /dev/mmcblk0 2>/dev/null; then echo "storage flush: busybox fsync ok"
+elif [ -x /mnt/onboard/.adds/koreader/luajit ] && /mnt/onboard/.adds/koreader/luajit -e 'local ffi=require("ffi"); ffi.cdef("int open(const char*,int,...); int fsync(int); int close(int);"); local fd=ffi.C.open("/dev/mmcblk0",0); assert(fd>=0 and ffi.C.fsync(fd)==0); ffi.C.close(fd)' 2>/dev/null; then echo "storage flush: luajit fsync ok"
+else echo "storage flush: no tool found (sync only)"; fi
+# Make sure the chip's normal storage area is the one selected (not a boot
+# area): read its first block for real, past Linux's own cache.
+echo 1 > /proc/sys/vm/drop_caches 2>/dev/null
+dd if=/dev/mmcblk0 of=/dev/null bs=512 count=1 2>&1 | tail -1
+sleep 1
 insmod "$D/nihil_chainload.ko" image="$D/sage.bin" args="$ARGS" $BOOK
 echo "insmod returned $? (if you can read this, Linux is still running: the test did not start)"
 dmesg | tail -40

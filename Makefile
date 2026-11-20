@@ -31,3 +31,10 @@ sim:
 	@mkdir -p build
 	cc -O2 -Wall -Wextra tools/sim/sim.c -o build/sim
 .PHONY: sim
+
+# PC test of the Sage storage driver against a stand-in controller + chip:
+#   make mmc-test && build/mmc_test disk.img "/Folder/Book.epub" Book.epub
+mmc-test:
+	@mkdir -p build
+	cc -O2 -Wall -Wextra tools/sim/mmc_test.c -o build/mmc_test
+.PHONY: mmc-test

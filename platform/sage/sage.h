@@ -58,6 +58,7 @@
 #define TCON_BASE   0x06511000u   /* timing controller tcon_lcd0 */
 #define DISP_TOP    0x06510000u
 #define IOMMU_BASE  0x030F0000u
+#define SMHC2_BASE_ADDR 0x04022000u  /* SD/MMC controller 2 = the built-in storage chip (sun8iw15p1.dtsi "sdc2") */
 
 /* ---------- screen (milestone 2) ---------- */
 #define PANEL_W 1920u
@@ -106,6 +107,7 @@
 #define T_PWR   0xE9000000u
 #define T_PLAY  0xEA000000u
 #define T_READ  0xEB000000u       /* test 3a: page turns */
+/* 0xEC000000 = storage, see mmc.h */
 
 /* End codes (bb[4] high half) */
 #define END_REHEARSAL_OK 0x600D0000u

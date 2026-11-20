@@ -53,32 +53,43 @@ static int fat_try(struct fat *f, uint32_t lba)           /* is there a FAT32 vo
     return f->clusters >= 65525u ? 0 : -1;                /* fewer clusters would be FAT16 */
 }
 
-/* Finds the FAT32 volume: whole disk, an MBR partition, or a GPT partition. Returns 0 when found. */
+/* Finds the FAT32 volume: whole disk, an MBR partition, or a GPT partition. When the
+ * disk holds several (the Kobo has small system volumes next to the big book
+ * volume), the largest one wins. Returns 0 when found. */
+static void fat_consider(struct fat *f, uint32_t lba, uint32_t *best_lba, uint32_t *best_size)
+{
+    if (fat_try(f, lba)) return;
+    uint32_t size = f->clusters * f->spc;
+    if (size > *best_size) { *best_size = size; *best_lba = lba; }
+}
+
 static int fat_mount(struct fat *f)
 {
     f->sec_ok = 0;
     if (fat_try(f, 0) == 0) return 0;
+    uint32_t best_lba = 0, best_size = 0;
     const uint8_t *b = fat_sector(f, 0);
     if (!b) return -1;
     uint32_t starts[4];
     uint8_t types[4];
     for (int i = 0; i < 4; i++) { types[i] = b[446 + i * 16 + 4]; starts[i] = fat_u32(b + 446 + i * 16 + 8); }
     for (int i = 0; i < 4; i++)
-        if (types[i] != 0 && types[i] != 0xEE && starts[i] && fat_try(f, starts[i]) == 0) return 0;
+        if (types[i] != 0 && types[i] != 0xEE && starts[i]) fat_consider(f, starts[i], &best_lba, &best_size);
     /* GPT: header in sector 1, entries usually from sector 2, 128 bytes each */
     b = fat_sector(f, 1);
-    if (!b || fat_u32(b) != 0x20494645u || fat_u32(b + 4) != 0x54524150u) return -1;   /* "EFI PART" */
-    uint32_t ent_lba = fat_u32(b + 72), n = fat_u32(b + 80), esz = fat_u32(b + 84);
-    if (esz < 128 || esz > 512 || n > 256) return -1;
-    for (uint32_t i = 0; i < n; i++) {
-        b = fat_sector(f, ent_lba + i * esz / 512);
-        if (!b) return -1;
-        const uint8_t *e = b + (i * esz) % 512;
-        uint32_t first = fat_u32(e + 32), first_hi = fat_u32(e + 36);
-        if ((fat_u32(e) | fat_u32(e + 4) | fat_u32(e + 8) | fat_u32(e + 12)) == 0 || first_hi) continue;
-        if (fat_try(f, first) == 0) return 0;
+    if (b && fat_u32(b) == 0x20494645u && fat_u32(b + 4) == 0x54524150u) {              /* "EFI PART" */
+        uint32_t ent_lba = fat_u32(b + 72), n = fat_u32(b + 80), esz = fat_u32(b + 84);
+        if (esz >= 128 && esz <= 512 && n <= 256)
+            for (uint32_t i = 0; i < n; i++) {
+                b = fat_sector(f, ent_lba + i * esz / 512);
+                if (!b) break;
+                const uint8_t *e = b + (i * esz) % 512;
+                uint32_t first = fat_u32(e + 32), first_hi = fat_u32(e + 36);
+                if ((fat_u32(e) | fat_u32(e + 4) | fat_u32(e + 8) | fat_u32(e + 12)) == 0 || first_hi) continue;
+                fat_consider(f, first, &best_lba, &best_size);
+            }
     }
-    return -1;
+    return best_size ? fat_try(f, best_lba) : -1;
 }
 
 static uint32_t fat_next(struct fat *f, uint32_t clus)    /* next cluster in a chain; 0 = end or error */
