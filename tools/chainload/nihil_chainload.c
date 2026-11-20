@@ -43,7 +43,7 @@ MODULE_PARM_DESC(readlog, "1 = print Nihil's black box (RAM at 0x5FA00000) to th
 
 static int nihil_readlog(void)
 {
-	u32 __iomem *bb = ioremap(BB_PHYS, 4096 + BB_MAX * 12);
+	u32 __iomem *bb = ioremap(BB_PHYS, 16384);
 	u32 i, n;
 
 	if (!bb) {
@@ -63,12 +63,27 @@ static int nihil_readlog(void)
 			readl(bb + i), readl(bb + i + 1), readl(bb + i + 2), readl(bb + i + 3),
 			readl(bb + i + 4), readl(bb + i + 5), readl(bb + i + 6), readl(bb + i + 7));
 	n = readl(bb + 3);
-	if (n > BB_MAX)
-		n = BB_MAX;
-	for (i = 0; i < n; i++)
-		pr_info("nihil-bb: ev %3u t=%6u ms L=%08x H=%08x\n", i,
-			readl(bb + BB_EVENTS + i * 3), readl(bb + BB_EVENTS + i * 3 + 1),
-			readl(bb + BB_EVENTS + i * 3 + 2));
+	if (readl(bb + 1) >= 2) {
+		/* v2: words 24-33 = start data of ports A..I and L; events of 11 words from 40 */
+		pr_info("nihil-bb: start A=%08x B=%08x C=%08x D=%08x E=%08x F=%08x G=%08x H=%08x I=%08x L=%08x\n",
+			readl(bb + 24), readl(bb + 25), readl(bb + 26), readl(bb + 27), readl(bb + 28),
+			readl(bb + 29), readl(bb + 30), readl(bb + 31), readl(bb + 32), readl(bb + 33));
+		if (n > 200)
+			n = 200;
+		for (i = 0; i < n; i++) {
+			u32 __iomem *e = bb + 40 + i * 11;
+			pr_info("nihil-bb: ev %3u t=%6u A=%08x B=%08x C=%08x D=%08x E=%08x F=%08x G=%08x H=%08x I=%08x L=%08x\n",
+				i, readl(e), readl(e + 1), readl(e + 2), readl(e + 3), readl(e + 4), readl(e + 5),
+				readl(e + 6), readl(e + 7), readl(e + 8), readl(e + 9), readl(e + 10));
+		}
+	} else {
+		if (n > BB_MAX)
+			n = BB_MAX;
+		for (i = 0; i < n; i++)
+			pr_info("nihil-bb: ev %3u t=%6u ms L=%08x H=%08x\n", i,
+				readl(bb + BB_EVENTS + i * 3), readl(bb + BB_EVENTS + i * 3 + 1),
+				readl(bb + BB_EVENTS + i * 3 + 2));
+	}
 	writel(0, bb);              /* mark as read */
 	iounmap(bb);
 	return -EAGAIN;

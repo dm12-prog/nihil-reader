@@ -1,5 +1,5 @@
 /*
- * Milestone 1, test 1c: "black box recorder".
+ * Milestone 1, test 1d: "black box recorder", watching every pin port (A..I and L) for 30 s.
  *
  * Test 1b proved Nihil runs (clock + watchdog reboot work) but the page buttons
  * were not seen. We can't show anything on screen yet, so this version writes
@@ -72,6 +72,16 @@ __attribute__((noreturn)) static void reboot(void)
 
 static volatile uint32_t *const bb = (volatile uint32_t *)BLACKBOX_PHYS;
 
+/* Data registers of ports A..I (main pio, index 0..8) and L (r_pio). Reading is harmless. */
+#define BB_PORTS    10
+#define BB_EV_WORDS (1 + BB_PORTS)
+static void read_ports(uint32_t *out)
+{
+    for (int i = 0; i < 9; i++)
+        out[i] = REG32(PIO_BASE + (uint32_t)i * 0x24u + 0x10);
+    out[9] = REG32(port_l_reg(0x10));
+}
+
 static void snapshot(int at)
 {
     bb[at + 0] = REG32(port_l_reg(0x00));   /* PL0-7 functions  */
@@ -87,39 +97,43 @@ static void snapshot(int at)
 __attribute__((noreturn)) int main(void)
 {
     uint64_t start = ticks();
+    uint32_t last[BB_PORTS], now[BB_PORTS];
 
     for (int i = 0; i < BLACKBOX_WORDS; i++)
         bb[i] = 0;
-    bb[1] = 1;                               /* log format version */
+    bb[1] = 2;                               /* log format version 2: all ports */
     bb[2] = ticks_per_second();
-    snapshot(8);                             /* words 8-15: as Linux left them */
+    snapshot(8);
 
     port_l_mode(FRONTLIGHT_EN_PIN, 1);
     port_l_write(FRONTLIGHT_EN_PIN, 0);
     port_l_mode(BTN_PAGEUP_PIN, 0);
     port_l_mode(BTN_PAGEDOWN_PIN, 0);
-    snapshot(16);                            /* words 16-23: after our changes */
-    bb[0] = BLACKBOX_MAGIC;                  /* log is valid from here on */
+    snapshot(16);
+    bb[0] = BLACKBOX_MAGIC;
 
-    uint32_t last_l = REG32(port_l_reg(0x10));
-    uint32_t last_h = REG32(port_h_reg(0x10));
+    read_ports(last);
+    for (int i = 0; i < BB_PORTS; i++)
+        bb[24 + i] = last[i];                /* words 24-33: starting data of A..I, L */
     uint32_t n = 0;
 
-    while (ticks() - start < ms_to_ticks(20000)) {
-        uint32_t l = REG32(port_l_reg(0x10));
-        uint32_t h = REG32(port_h_reg(0x10));
-        if ((l != last_l || h != last_h) && n < BLACKBOX_MAX_EVENTS) {
-            volatile uint32_t *e = &bb[BLACKBOX_EVENTS + n * 3];
-            e[0] = (uint32_t)(ticks() - start) / (ticks_per_second() / 1000u);  /* ms since start (fits: 20 s) */
-            e[1] = l;
-            e[2] = h;
+    while (ticks() - start < ms_to_ticks(30000)) {
+        read_ports(now);
+        int changed = 0;
+        for (int i = 0; i < BB_PORTS; i++)
+            changed |= (now[i] != last[i]);
+        if (changed && n < BLACKBOX_MAX_EVENTS) {
+            volatile uint32_t *e = &bb[BLACKBOX_EVENTS + n * BB_EV_WORDS];
+            e[0] = (uint32_t)(ticks() - start) / (ticks_per_second() / 1000u);
+            for (int i = 0; i < BB_PORTS; i++) {
+                e[1 + i] = now[i];
+                last[i] = now[i];
+            }
             n++;
             bb[3] = n;
-            last_l = l;
-            last_h = h;
         }
         sleep_ms(2);
     }
-    bb[4] = 0x600D0000u | (n & 0xFFFF);      /* "good": reached the end normally */
+    bb[4] = 0x600D0000u | (n & 0xFFFF);
     reboot();
 }

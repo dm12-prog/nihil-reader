@@ -43,6 +43,6 @@
  * 0x5FAB7C00), per the live /proc/cmdline and /proc/iomem (2026-11-19). */
 #define BLACKBOX_PHYS        0x5FA00000u
 #define BLACKBOX_MAGIC       0x4E49484Cu   /* "NIHL" */
-#define BLACKBOX_EVENTS      32            /* first event word */
-#define BLACKBOX_MAX_EVENTS  300
-#define BLACKBOX_WORDS       (BLACKBOX_EVENTS + BLACKBOX_MAX_EVENTS * 3)
+#define BLACKBOX_EVENTS      40            /* first event word */
+#define BLACKBOX_MAX_EVENTS  200
+#define BLACKBOX_WORDS       (BLACKBOX_EVENTS + BLACKBOX_MAX_EVENTS * 11)
