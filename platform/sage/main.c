@@ -210,7 +210,7 @@ static int i2c_find_pmic(void)
 /* ---------- boot parameters (written by the loader module) ---------- */
 struct timing { uint32_t lsl, lbl, ldl, lel, gdck_sta, lgonl, fsl, fbl, fdl, fel; };
 static struct timing tm;
-static uint32_t p_drive, p_mode, p_temp;
+static uint32_t p_drive, p_mode, p_temp, p_pm1, p_pm2;        /* p_pm*: power chip settings copied from Linux */
 
 /* ---------- waveform file (AWF), preloaded by U-Boot ---------- */
 static uint32_t rd32(uint32_t a)
@@ -356,7 +356,9 @@ __attribute__((noreturn)) int main(void)
     tm.lsl = pr[2]; tm.lbl = pr[3]; tm.ldl = pr[4]; tm.lel = pr[5]; tm.gdck_sta = pr[6];
     tm.lgonl = pr[7]; tm.fsl = pr[8]; tm.fbl = pr[9]; tm.fdl = pr[10]; tm.fel = pr[11];
     p_drive = pr[12]; p_mode = pr[13]; p_temp = pr[14];
-    for (int i = 2; i < 15; i++)
+    p_pm1 = pr[1] >= 15 ? pr[15] : 0;                         /* VCOM_ADJ1 | VCOM_ADJ2<<8 | VLDO_ADJ<<16 */
+    p_pm2 = pr[1] >= 15 ? pr[16] : 0;                         /* VEE_VP_EXT | PWRON_DLY<<8 */
+    for (int i = 2; i < 17; i++)
         lg(T_PARAM | (uint32_t)i, pr[i]);
     pr[0] = 0;                                                /* one-shot */
     LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
@@ -400,6 +402,12 @@ __attribute__((noreturn)) int main(void)
     for (int r = 0; r < 9; r++) {
         reg[r] = pmic_read((uint8_t)r);
         lg(T_PMIC | (uint32_t)r, (uint32_t)reg[r]);
+    }
+    /* Linux is stopped mid-flight, so the panel rails can still be on (seen in
+     * test 2b-6). Nothing is scanning the panel now: switch them off cleanly. */
+    if (pmic_bus >= 0 && reg[0] >= 0 && (reg[0] & 0x80)) {
+        panel_power_off();
+        lg(T_PWR | 0x20, (uint32_t)pmic_read(0x00));
     }
     uint32_t temp = p_temp ? p_temp : (reg[8] > 0 && reg[8] < 60 ? (uint32_t)reg[8] : 25u);
     lg(T_WF | 0x40, temp);
@@ -526,6 +534,24 @@ __attribute__((noreturn)) int main(void)
         finish(END_REHEARSAL_OK);
     if (pmic_bus < 0)
         finish(END_NO_PMIC);
+    if (!p_pm1 || !p_pm2)
+        finish(END_BAD_PARAMS);                               /* never power the panel with guessed voltages */
+    /* Program the power chip exactly as Linux had it (VCOM is calibrated per
+     * panel at the factory), read everything back, and stop if one bit differs. */
+    {
+        static const uint8_t r[6] = { 1, 2, 3, 5, 6, 4 };
+        uint8_t v[6] = { (uint8_t)p_pm1, (uint8_t)(p_pm1 >> 8), (uint8_t)(p_pm1 >> 16),
+                         (uint8_t)p_pm2, (uint8_t)(p_pm2 >> 8), 0 };
+        uint32_t bad = 0;
+        for (int i = 0; i < 6; i++) {
+            if (!pmic_write(r[i], v[i]) || pmic_read(r[i]) != v[i])
+                bad |= 1u << i;
+            lg(T_PWR | 0x30 | (uint32_t)r[i], (uint32_t)pmic_read(r[i]));
+        }
+        lg(T_PWR | 0x40, bad);
+        if (bad)
+            finish(END_PMIC_VERIFY);
+    }
 
     /* --- 7. DRIVE: power the panel and play the frames --- */
     stage(8);
@@ -565,7 +591,7 @@ __attribute__((noreturn)) int main(void)
     /* panel power: xon, rails on over I2C, wait for "power good", then VCOM */
     stage(9);
     pin_write(1, 7, 1);                                       /* PB7 xon */
-    int w1 = pmic_write(0x04, 0x00), w2 = pmic_write(0x00, 0xE0);
+    int w1 = 1, w2 = pmic_write(0x00, 0xE0);
     ts = now_us();
     while (!pin_read(7, 7) && now_us() - ts < 200000u)
         ;

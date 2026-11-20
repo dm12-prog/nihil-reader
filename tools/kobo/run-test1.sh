@@ -1,7 +1,7 @@
 #!/bin/sh
 # Nihil test 2b/2c: screen engine. DRIVE=0 -> rehearsal with the panel power
 # off (2b). DRIVE=1 -> really draw (2c). Writes only log files in this folder.
-DRIVE=0
+DRIVE=1
 MODE=1          # 1 = GC16 (full 16-grey update), 3 = DU (fast black/white)
 D=/mnt/onboard/.adds/nihil
 mkdir /tmp/nihil.lock 2>/dev/null || exit 0     # a double tap must not start two runs
@@ -56,7 +56,17 @@ if [ "$N" = 1 ] && [ -n "$LIVE" ]; then
 else
   echo "no single timing found: not starting Nihil"; rmdir /tmp/nihil.lock; sync; exit 1
 fi
-ARGS="${ARGS}${DRIVE},${MODE},0"
+# Screen power chip settings (regs 1,2,3,5,6) as Linux had them: every sample
+# taken above must agree, otherwise Nihil gets 0,0 and refuses to power the panel.
+PMN=$(dmesg | grep "nihil-pm: t=" | sed 's/.*regs0-8: //' | awk '{print $2,$3,$4,$6,$7}' | sort -u | wc -l)
+set -- $(dmesg | grep "nihil-pm: t=" | sed 's/.*regs0-8: //' | tail -1)
+PM1=0; PM2=0
+if [ "$PMN" = 1 ] && [ $# = 9 ] && [ "$2" != 00 ]; then
+  PM1=$(( 0x$2 | (0x$3 << 8) | (0x$4 << 16) ))
+  PM2=$(( 0x$6 | (0x$7 << 8) ))
+fi
+echo "power chip settings: distinct=$PMN -> $PM1,$PM2 (vcom reg=$2 $3)"
+ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2}"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20
