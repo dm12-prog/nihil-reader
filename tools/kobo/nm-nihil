@@ -1,3 +1,5 @@
 menu_item:main:Nihil 1. Collect info:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/nihil/collect-info.sh
 menu_item:main:Nihil 2. Run test:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/nihil/run-test1.sh
 menu_item:main:Nihil 3. Read black box:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/nihil/read-blackbox.sh
+menu_item:main:Nihil 4. Connect to computer:nickel_misc:force_usb_connection
+menu_item:main:Nihil 5. Cable link:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/nihil/cable-link.sh
