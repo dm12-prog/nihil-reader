@@ -83,9 +83,11 @@ echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20
 
-# The book to read: plain text, made from an EPUB with tools/book/epub2txt.py.
+# The book to read: an EPUB or a plain text file (at most 4 MB for now).
+# Nihil cannot read the Kobo's storage yet, so the loader copies it into RAM.
 BOOK=""
 [ -s "$D/book.txt" ] && BOOK="book=$D/book.txt"
+[ -s "$D/book.epub" ] && BOOK="book=$D/book.epub"
 echo "book: $BOOK"
 echo "--- dry run ---"
 insmod "$D/nihil_chainload.ko" image="$D/sage.bin" args="$ARGS" $BOOK dryrun=1

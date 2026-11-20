@@ -500,6 +500,39 @@ static void show(int verbose)
 }
 
 
+/* ---------- services for the reader app (core/app.h) ----------
+ * Nihil cannot read the Kobo's storage yet. Until it can, the "library" is the
+ * one book file the loader copied into RAM before Linux was stopped. */
+#define HANDED_NAME "Book from the loader"
+#define HOLD_MS 600u
+static uint32_t g_book_len;
+static int hal_list_dir(const char *path, struct app_entry *out, int max)
+{
+    if (path[0] || max < 1 || !g_book_len)
+        return 0;
+    app_copy(out[0].name, HANDED_NAME, sizeof out[0].name);
+    out[0].is_dir = 0;
+    return 1;
+}
+static int hal_read_file(const char *path, uint8_t *buf, uint32_t max, uint32_t *len)
+{
+    (void)path;
+    if (!g_book_len || g_book_len > max)
+        return -1;
+    const volatile uint8_t *s = (const volatile uint8_t *)BOOK_BUF;
+    for (uint32_t i = 0; i < g_book_len; i++) {
+        buf[i] = s[i];
+        if (!(i & 0xFFFF)) wdt_feed();
+    }
+    *len = g_book_len;
+    return 0;
+}
+static void hal_set_light(uint32_t brightness, uint32_t warmth)
+{
+    lg(T_READ | 0x30, (brightness << 8) | warmth);            /* the light driver comes later */
+}
+static void hal_busy(void) { wdt_feed(); }
+
 __attribute__((noreturn)) int main(void)
 {
     t0 = ticks();
@@ -642,18 +675,24 @@ __attribute__((noreturn)) int main(void)
             finish(END_PMIC_VERIFY);
     }
 
-    /* --- 6. test 3c: a real book, pages turned with the page buttons --- */
+    /* --- 6. the reader app: library, book, menu; driven by the two page buttons --- */
     stage(7);
-    static const char no_book[] = "No book was handed to Nihil.\nPut a plain text file at .adds/nihil/book.txt and run the test again.\n";
+    g_book_len = book_len;
     static struct app app;
-    app_init(&app, book_len ? (const uint8_t *)BOOK_BUF : (const uint8_t *)no_book, book_len ? book_len : sizeof no_book - 1,
-             PANEL_W, PANEL_H, p_rot, (volatile uint32_t *)PAGE_TAB, PAGE_TAB_MAX);
+    struct app_mem mem = { (uint8_t *)APP_FILE, APP_FILE_MAX, (uint8_t *)APP_WORK, APP_WORK_MAX,
+                           (uint8_t *)APP_TEXT, APP_TEXT_MAX, (volatile uint32_t *)PAGE_TAB, PAGE_TAB_MAX };
+    app_init(&app, &mem, PANEL_W, PANEL_H, p_rot);
+    uint32_t tr = now_us();
+    if (book_len)
+        app_open(&app, HANDED_NAME, HANDED_NAME);             /* straight into the book the loader handed over */
+    lg(T_READ | 0x22, now_us() - tr);                         /* time to open the book */
+    lg(T_READ | 0x23, app.rd.len);
     uint32_t turns = 0;
 
-    uint32_t tr = now_us();
+    tr = now_us();
     fill_words((volatile uint32_t *)img_cur, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);
     app_paint(&app, (volatile uint8_t *)img_cur);
-    lg(T_READ, now_us() - tr);                                /* time to paint one page */
+    lg(T_READ, now_us() - tr);                                /* time to paint one screen */
     show(1);
     stage(8);
 
@@ -671,28 +710,48 @@ __attribute__((noreturn)) int main(void)
         sleep_us(40000);                                      /* still pressed after 40 ms = a real press */
         l = REG32(R_PIO_BASE + 0x10);
         int down2 = !((l >> BTN_NEXT_PIN) & 1), up2 = !((l >> BTN_BACK_PIN) & 1);
-        if (down2 && up2) {                                   /* both buttons: leave */
+        if (down2 && up2) {                                   /* both buttons: leave (development exit) */
             lg(T_READ | 3, turns);
             break;
         }
         if (down != down2 || up != up2)
             continue;
-        idle_from = ticks();
-        if (!app_key(&app, down ? KEY_NEXT : KEY_BACK))
-            continue;                                         /* first or last page: nothing to turn to */
-        turns++;
-        tr = now_us();
-        fill_words((volatile uint32_t *)img_cur, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);
-        app_paint(&app, (volatile uint8_t *)img_cur);
-        uint32_t paint_ms = (now_us() - tr) / 1000u;
-        show(0);
-        lg(T_READ | 0x10 | (uint32_t)(down ? 0 : 1), (app.page << 20) | (paint_ms << 10) | (((now_us() - tr) / 1000u) & 0x3FF));
-        /* wait for the button to be let go (or both pressed -> handled next round) */
+        /* Short press or hold? Wait for the release, at most HOLD_MS. */
         uint64_t w = ticks();
-        while ((ticks() - w) / 24000u < 3000u) {
+        int held = 0, both = 0;
+        for (;;) {
             l = REG32(R_PIO_BASE + 0x10);
             int d3 = !((l >> BTN_NEXT_PIN) & 1), u3 = !((l >> BTN_BACK_PIN) & 1);
-            if ((!d3 && !u3) || (d3 && u3))
+            if (d3 && u3) { both = 1; break; }
+            if (!d3 && !u3) break;
+            if ((ticks() - w) / 24000u >= HOLD_MS) { held = 1; break; }
+            wdt_feed();
+        }
+        if (both) {
+            lg(T_READ | 3, turns);
+            break;
+        }
+        idle_from = ticks();
+        enum app_key key = down ? (held ? KEY_NEXT_HOLD : KEY_NEXT) : (held ? KEY_BACK_HOLD : KEY_BACK);
+        tr = now_us();
+        int res = app_key(&app, key);
+        if (res == APP_LEAVE) {
+            lg(T_READ | 4, turns);
+            break;
+        }
+        if (res == APP_REDRAW) {
+            turns++;
+            fill_words((volatile uint32_t *)img_cur, 0xFFFFFFFFu, PANEL_W * PANEL_H / 4);
+            app_paint(&app, (volatile uint8_t *)img_cur);
+            uint32_t paint_ms = (now_us() - tr) / 1000u;
+            show(0);
+            lg(T_READ | 0x10 | (uint32_t)key, ((uint32_t)app.view << 28) | (app.page << 12) | (paint_ms > 0xFFF ? 0xFFF : paint_ms));
+        }
+        /* after a hold: wait for the button to be let go, so it does not fire again */
+        w = ticks();
+        while (held && (ticks() - w) / 24000u < 5000u) {
+            l = REG32(R_PIO_BASE + 0x10);
+            if (((l >> BTN_NEXT_PIN) & 1) && ((l >> BTN_BACK_PIN) & 1))
                 break;
             wdt_feed();
         }

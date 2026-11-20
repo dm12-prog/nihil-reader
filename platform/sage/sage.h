@@ -82,6 +82,12 @@
 #define MAX_FRAMES   100u         /* note: more than 104 frames would run into BOOK_BUF */
 #define BOOK_BUF     0x5F000000u  /* the book's text (plain UTF-8) */
 #define BOOK_MAX     0x00400000u
+#define APP_FILE     0x58000000u  /* a book file as read from "disk" (32 MB) */
+#define APP_FILE_MAX 0x02000000u
+#define APP_WORK     0x5A000000u  /* scratch for unpacking (16 MB) */
+#define APP_WORK_MAX 0x01000000u
+#define APP_TEXT     0x5B000000u  /* the open book as text (32 MB) */
+#define APP_TEXT_MAX 0x02000000u
 #define PAGE_TAB     0x5F400000u  /* where each page starts in the text */
 #define PAGE_TAB_MAX 0x00080000u
 #define WAV_PITCH    1296u        /* bytes per line seen in Linux's EDMA setting */
