@@ -77,7 +77,7 @@
 #define WAV_BUF_STEP 0x00200000u
 #define MAX_FRAMES   100u
 #define WAV_PITCH    1296u        /* bytes per line seen in Linux's EDMA setting */
-#define WAV_LINES_MAX 1500u
+#define WAV_LINES     1451u       /* lines per frame seen in Linux's EDMA setting */
 
 /* Black-box tags (format 3 "address" column) */
 #define T_STAGE 0xE0000000u       /* value = ms since start */

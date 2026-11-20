@@ -307,14 +307,26 @@ __attribute__((noreturn)) int main(void)
     LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
     FTL = tm.fsl + tm.fbl + tm.fdl + tm.fel;
 
-    /* Cross-check the timing against what Linux left in the engine and the
-     * timing controller's last settings. Refuse to go on if they disagree. */
+    /* Make sure the engine's clock is running (Linux normally leaves it on). */
+    lg(T_CHK | 8, REG32(CCU_BASE + 0x610)); lg(T_CHK | 9, REG32(CCU_BASE + 0x61C));
+    if ((REG32(CCU_BASE + 0x61C) & 0x00010001u) != 0x00010001u) {
+        REG32(CCU_BASE + 0x610) = 0x80000001;                 /* value seen under Linux (test 2a) */
+        REG32(CCU_BASE + 0x61C) = 0x00010000;
+        REG32(CCU_BASE + 0x61C) = 0x00010001;
+        sleep_us(1000);
+        lg(T_CHK | 10, REG32(CCU_BASE + 0x61C));
+    }
+
+    /* Cross-check the timing. Always: against the frame size Linux was seen
+     * using in test 2a (324 x 1451). And, if Linux left its settings in the
+     * engine (it clears them after a sleep), against those too. */
     uint32_t coor = EE(0x414), wsize = EE(0x410), pitch = EE(0x40C);
     lg(T_CHK, coor); lg(T_CHK | 1, wsize); lg(T_CHK | 2, pitch); lg(T_CHK | 3, EE(0x000));
-    int ok = tm.ldl * 8 == PANEL_W && tm.fdl == PANEL_H &&
-             coor == (((tm.fbl + tm.fsl) << 16) | ((tm.lbl + tm.lsl) << 3)) &&
-             wsize == (((FTL - 1) << 16) | (LTL * 8 - 1)) && pitch == LTL * 4 &&
-             LTL * 4 == WAV_PITCH && FTL <= WAV_LINES_MAX;
+    int ok = tm.ldl * 8 == PANEL_W && tm.fdl == PANEL_H && tm.fsl >= 1 && tm.fbl >= 1 &&
+             LTL * 4 == WAV_PITCH && FTL == WAV_LINES;
+    if (wsize != 0)
+        ok = ok && coor == (((tm.fbl + tm.fsl) << 16) | ((tm.lbl + tm.lsl) << 3)) &&
+             wsize == (((FTL - 1) << 16) | (LTL * 8 - 1)) && pitch == LTL * 4;
     lg(T_CHK | 4, (uint32_t)ok);
     if (!ok)
         finish(END_BAD_TIMING);

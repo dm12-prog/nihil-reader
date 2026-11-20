@@ -36,13 +36,15 @@ done
 echo "--- timing really used by the running kernel ---"
 insmod "$D/nihil_chainload.ko" findtiming=1 args="$ARGS"0
 dmesg | grep "nihil-tm"
-N=$(dmesg | grep "nihil-tm-ok:" | sed 's/.*nihil-tm-ok: //' | sort -u | wc -l)
-LIVE=$(dmesg | grep "nihil-tm-ok:" | sed 's/.*nihil-tm-ok: //' | sort -u | head -1 | tr ' ' ',')
-echo "timings that match the engine registers: $N, first: $LIVE"
+# Every copy of the timing found in kernel memory must agree. (The engine
+# registers are only a second opinion: Linux clears them after a sleep.)
+N=$(dmesg | grep "nihil-tm: at" | sed 's/.*: //' | sort -u | wc -l)
+LIVE=$(dmesg | grep "nihil-tm: at" | sed 's/.*: //' | sort -u | head -1 | tr ' ' ',')
+echo "distinct timings in kernel memory: $N, first: $LIVE"
 if [ "$N" = 1 ] && [ -n "$LIVE" ]; then
   ARGS="$LIVE,"
 else
-  echo "no single matching timing found: not starting Nihil"; rmdir /tmp/nihil.lock; sync; exit 1
+  echo "no single timing found: not starting Nihil"; rmdir /tmp/nihil.lock; sync; exit 1
 fi
 ARGS="${ARGS}${DRIVE},${MODE},0"
 echo "args=$ARGS"
