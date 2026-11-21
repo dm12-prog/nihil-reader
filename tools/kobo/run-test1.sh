@@ -119,21 +119,32 @@ for p in /sys/block/mmcblk0/mmcblk0p*; do echo "$p start=$(cat $p/start) size=$(
 mount -t debugfs none /sys/kernel/debug 2>/dev/null
 cat /sys/kernel/debug/mmc*/ios 2>&1
 echo "--- real run ---"
-sync; sleep 1; sync
 # Ask Linux to hand everything it has already saved over to the storage chip
 # for good (the chip keeps recent saves in a short-term memory of its own).
 # This opens the storage read-only and stores nothing new.
-if fsync /dev/mmcblk0 2>/dev/null; then echo "storage flush: fsync ok"
-elif busybox fsync /dev/mmcblk0 2>/dev/null; then echo "storage flush: busybox fsync ok"
-elif [ -x /mnt/onboard/.adds/koreader/luajit ] && /mnt/onboard/.adds/koreader/luajit -e 'local ffi=require("ffi"); ffi.cdef("int open(const char*,int,...); int fsync(int); int close(int);"); local fd=ffi.C.open("/dev/mmcblk0",0); assert(fd>=0 and ffi.C.fsync(fd)==0); ffi.C.close(fd)' 2>/dev/null; then echo "storage flush: luajit fsync ok"
-else echo "storage flush: no tool found (sync only)"; fi
+flush_chip() {
+  if fsync /dev/mmcblk0 2>/dev/null; then echo "fsync"
+  elif busybox fsync /dev/mmcblk0 2>/dev/null; then echo "busybox fsync"
+  elif [ -x /mnt/onboard/.adds/koreader/luajit ] && /mnt/onboard/.adds/koreader/luajit -e 'local ffi=require("ffi"); ffi.cdef("int open(const char*,int,...); int fsync(int); int close(int);"); local fd=ffi.C.open("/dev/mmcblk0",0); assert(fd>=0 and ffi.C.fsync(fd)==0); ffi.C.close(fd)' 2>/dev/null; then echo "luajit fsync"
+  else echo "none (sync only)"; fi
+}
+sync; sleep 1; sync
+echo "storage flush tool: $(flush_chip)"
+echo "now closing this log, flushing once more and starting Nihil"
+# Close this log file before the jump, so no file is left half-written when
+# Linux stops (earlier runs left FSCK0000.* fragments behind for that reason).
+exec > /dev/null 2>&1
+sync
+flush_chip
 # Make sure the chip's normal storage area is the one selected (not a boot
 # area): read its first block for real, past Linux's own cache.
-echo 1 > /proc/sys/vm/drop_caches 2>/dev/null
-dd if=/dev/mmcblk0 of=/dev/null bs=512 count=1 2>&1 | tail -1
+echo 1 > /proc/sys/vm/drop_caches
+dd if=/dev/mmcblk0 of=/dev/null bs=512 count=1
 sleep 1
 insmod "$D/nihil_chainload.ko" image="$D/sage.bin" args="$ARGS" $BOOK
-echo "insmod returned $? (if you can read this, Linux is still running: the test did not start)"
+RC=$?
+exec >> "$D/run.log" 2>&1
+echo "insmod returned $RC (if you can read this, Linux is still running: the test did not start)"
 dmesg | tail -40
 sync
 rmdir /tmp/nihil.lock
