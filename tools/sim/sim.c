@@ -152,6 +152,7 @@ int main(int argc, char **argv)
     struct app_mem m = { file, sizeof file, work, sizeof work, text, sizeof text, pages, 1 << 20 };
     posbox_init(box);
     app_init(&a, &m, PW, PH, argc > 4 ? (uint32_t)atoi(argv[4]) : 1, getenv("NIHIL_LOOK") ? (uint32_t)atoi(getenv("NIHIL_LOOK")) : 0);
+    if (getenv("NIHIL_BATT")) a.battery = (uint32_t)atoi(getenv("NIHIL_BATT"));
     memset(img, 255, sizeof img);
     app_paint(&a, img);
     save(&a, argv[3], 0, '-');

@@ -29,13 +29,15 @@ computer (simulator or stand-in hardware), not yet run on the Kobo.
 | Start without Linux, timer, buttons, black-box log, reboot | On the Kobo (milestone 1) |
 | Draw on the e-ink screen (16 greys, full refresh) | On the Kobo (milestone 2) |
 | Page turning, portrait, real text, Libron font | On the Kobo (tests 3a-3d) |
-| EPUB reader, library browser, menu, cover = soft sleep | PC only (simulator), builds for the Sage |
-| FAT32 reader (`core/fat.h`, `core/library.h`) | PC only, tested on disk images (MBR, GPT, long and accented names) |
-| Storage chip driver, read-only (`platform/sage/mmc.h`) | PC only, 22 checks against a stand-in chip (`make mmc-test`) |
-| Frontlight (`platform/sage/light.h`) | PC only, 22 checks with Kobo's real table file (`make light-test`) |
-| Core naps while waiting (WFE + timer event stream) | Written, cannot be tested on a PC |
-| Cable link for development (USB network + SSH) | Scripts written, not installed |
-| Real low-power sleep (RAM self-refresh), saving the reading position, direct boot | Not started |
+| EPUB reader, library browser, menu | On the Kobo (21 Nov 2026) |
+| FAT32 reader + storage chip driver, read-only | On the Kobo (21 Nov 2026: library shows the real books, 6.4 MB/s, 0 retries) |
+| Frontlight and warmth | On the Kobo (21 Nov 2026) |
+| Core naps while waiting (WFE + timer event stream) | On the Kobo (21 Nov 2026) |
+| Cable link for development (USB network + SSH), one tap per restart | On the Kobo (21 Nov 2026) |
+| Reading position (kept in RAM, saved to `positions.txt` by Kobo's own scripts) | Installed on the Kobo, PC-tested, not yet run there |
+| Page looks 1-3 (`rd_set_look`, `LOOK=` in run-test1.sh), look 0 unchanged | PC only (simulator); pictures in `docs/looks` |
+| Battery: Kobo's own % shown in the menu, read-only chip readings logged (tags EE00000x start, EE00001x leaving) | Written, not yet on the Kobo |
+| Live battery %, faster page turns (partial refresh), real low-power sleep, direct boot | Not started |
 
 Each new piece has its own switch in `tools/kobo/run-test1.sh` (STORE, LIGHT,
 NAP), so it can be tried alone and switched off again.

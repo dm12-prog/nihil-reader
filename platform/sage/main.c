@@ -623,6 +623,57 @@ static int light_wr(int chip, uint8_t reg, uint8_t val)
     I2C_PORT = sp; I2C_SCL = sc; I2C_SDA = sd;
     return ok;
 }
+/* ---------- battery: a read-only look at the main power chip ----------
+ * ROHM BD71828 on twi2 (PE1 clock, PE2 data), address 0x4B. Nihil only READS
+ * it. Register numbers and scales are from mainline Linux
+ * (include/linux/mfd/rohm-bd71828.h, drivers/power/supply/bd71828-power.c):
+ * 0x8C/0x8D battery voltage (13 bits, 1 mV a step), 0xB2/0xB3 average current
+ * (bit 15 = flowing out of the battery), 0xB5..0xB8 the chip's running charge
+ * counter, 0x68 charger input state, 0x65 charging state.
+ * The percentage itself comes from Kobo's own software at the moment Nihil
+ * is started (boot parameter); these readings are logged so the counter can
+ * later be turned into a live percentage. */
+#define BD71828_ADDR 0x4B
+#define T_BATT 0xEE000000u
+static int batt_rd(uint8_t reg)                               /* -1 = no answer */
+{
+    int sp = I2C_PORT, sc = I2C_SCL, sd = I2C_SDA, v = -1;
+    I2C_PORT = 4; I2C_SCL = 1; I2C_SDA = 2;
+    i2c_start();
+    if (i2c_tx(BD71828_ADDR << 1) && i2c_tx(reg)) {
+        i2c_start();
+        if (i2c_tx((BD71828_ADDR << 1) | 1)) v = i2c_rx_last();
+    }
+    i2c_stop();
+    I2C_PORT = sp; I2C_SCL = sc; I2C_SDA = sd;
+    return v;
+}
+static uint32_t batt_end_slot;                                /* where the "when leaving" readings go */
+static void batt_put(uint32_t when, uint32_t i, uint32_t v)
+{
+    if (when == 0) { lg(T_BATT | i, v); return; }
+    if (batt_end_slot + i < BLACKBOX_MAX_PAIRS)               /* into the places kept free at the start */
+        bb[BLACKBOX_EVENTS + (batt_end_slot + i) * 2 + 1] = v;
+}
+/* when: 0 = at the start, 1 = when leaving. The leaving readings are written
+ * into pairs set aside at the start (tags EE000010..13), so a long session
+ * that fills the log cannot push them out. */
+static void batt_log(uint32_t when)
+{
+    int vu = batt_rd(0x8C), vl = batt_rd(0x8D), iu = batt_rd(0xB2), il = batt_rd(0xB3);
+    uint32_t cc = 0;
+    for (uint8_t r = 0xB5; r <= 0xB8; r++) cc = cc << 8 | (uint32_t)(batt_rd(r) & 0xFF);
+    int ok = vu >= 0 && vl >= 0;
+    batt_put(when, 0, ok ? (uint32_t)((vu & 0x1F) << 8 | vl) : 0xFFFFFFFFu);   /* battery voltage, mV (FFFFFFFF = chip silent) */
+    batt_put(when, 1, (uint32_t)((iu & 0xFF) << 8 | (il & 0xFF)));             /* average current, raw (bit 15 = discharging) */
+    batt_put(when, 2, cc);                                                      /* charge counter, raw */
+    batt_put(when, 3, (uint32_t)(batt_rd(0x68) & 0xFF) | (uint32_t)(batt_rd(0x65) & 0xFF) << 8);   /* input state | charging state << 8 */
+    if (when == 0) {
+        batt_end_slot = npairs;
+        for (uint32_t i = 0; i < 4; i++) lg(T_BATT | 0x10 | i, 0);
+    }
+}
+
 static void light_log(uint32_t tag, uint32_t v) { lg(tag, v); }
 #include "light.h"
 static struct light g_light;
@@ -698,6 +749,8 @@ __attribute__((noreturn)) int main(void)
     uint32_t p_store = pr[1] >= 17 ? pr[18] : 0;              /* 1 = read books from the Kobo's storage */
     uint32_t p_light = pr[1] >= 18 ? pr[19] : 0;              /* 1 = drive the frontlight chips */
     uint32_t p_nap = pr[1] >= 19 ? pr[20] : 0;                /* 1 = let the core stand still while waiting */
+    uint32_t p_batt = pr[1] >= 20 ? pr[21] : 255;             /* battery % as Kobo's software saw it at the start, 255 = unknown */
+    uint32_t p_look = pr[1] >= 21 ? pr[22] : 0;               /* page look, 0 = plain (see rd_set_look) */
     /* The book (plain text) sits somewhere in what was Linux's memory: move it
      * to our own corner before we start using RAM for pictures. */
     uint32_t book_src = pr[32], book_len = pr[33];
@@ -711,7 +764,7 @@ __attribute__((noreturn)) int main(void)
         else
             for (uint32_t i = book_len; i-- > 0;) { d[i] = sr[i]; if (!(i & 0xFFFF)) wdt_feed(); }
     }
-    for (int i = 2; i < 21; i++)
+    for (int i = 2; i < 23; i++)
         lg(T_PARAM | (uint32_t)i, pr[i]);
     pr[0] = 0;                                                /* one-shot */
     LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
@@ -843,7 +896,9 @@ __attribute__((noreturn)) int main(void)
     struct app_mem mem = { (uint8_t *)APP_FILE, APP_FILE_MAX, (uint8_t *)APP_WORK, APP_WORK_MAX,
                            (uint8_t *)APP_TEXT, APP_TEXT_MAX, (volatile uint32_t *)PAGE_TAB, PAGE_TAB_MAX };
     uint32_t tr = now_us();
-    app_init(&app, &mem, PANEL_W, PANEL_H, p_rot, 0);           /* also reopens the book read last, at its place */
+    batt_log(0);
+    app_init(&app, &mem, PANEL_W, PANEL_H, p_rot, p_look > 3 ? 0 : p_look);   /* also reopens the book read last, at its place */
+    app.battery = p_batt;
     lg(T_POS | 0x400, app.pos_n);                             /* places known from the positions file */
     lg(T_POS | 0x401, app.have_book ? app.page : 0xFFFFFFFFu);/* page the last book was reopened at */
     lg(T_POS | 0x402, now_us() - tr);
@@ -949,6 +1004,7 @@ __attribute__((noreturn)) int main(void)
         idle_from = ticks();
     }
     lg(T_READ | 0x53, g_nap_wakes);
+    batt_log(1);
     mmc_log_stats();
     stage(9);
     finish(END_DRAWN_OK);

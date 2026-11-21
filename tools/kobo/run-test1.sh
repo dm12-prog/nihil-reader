@@ -6,6 +6,7 @@ ROT=1           # page direction on the panel: 1 or 3 = portrait (one of them is
 MODE=1          # 1 = GC16 (full 16-grey update), 3 = DU (fast black/white)
 NAP=1           # 1 = the processor core stands still while Nihil waits for a button, 0 = it runs flat out as before
 LIGHT=1         # 1 = Nihil drives the frontlight (menu: Light, Warmth), 0 = it leaves the light chips alone
+LOOK=0          # page look: 0 = plain (as it always was), 1 = Kobalt plus, 2 = Classic book, 3 = Bare
 STORE=1         # 1 = Nihil reads the book library straight from the Kobo's storage chip (read-only), 0 = only the one book handed over in RAM
 D=/mnt/onboard/.adds/nihil
 mkdir /tmp/nihil.lock 2>/dev/null || exit 0     # a double tap must not start two runs
@@ -81,7 +82,22 @@ elif [ "$PMN" = 0 ] && [ -s "$D/pmic.cfg" ]; then
   echo "no rails-on sample this time: using remembered settings"
 fi
 echo "power chip settings: distinct=$PMN -> $PM1,$PM2 (vcom reg=$1 $2)"
-ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE},${LIGHT},${NAP}"
+# Battery as Kobo's own software sees it right now (read-only). Nihil shows
+# this number in its menu; 255 = not found.
+echo "--- battery as Linux sees it ---"
+BATT=255
+for f in /sys/class/power_supply/*/capacity; do
+  [ -r "$f" ] || continue
+  v=$(cat "$f" 2>/dev/null)
+  echo "$f: $v"
+  case "$v" in ''|*[!0-9]*) continue;; esac
+  case "$f" in */battery/*|*bd71*|*main*) BATT=$v;; *) [ "$BATT" = 255 ] && BATT=$v;; esac
+done
+for f in /sys/class/power_supply/*/status /sys/class/power_supply/*/voltage_now /sys/class/power_supply/*/current_now /sys/class/power_supply/*/charge_now /sys/class/power_supply/*/charge_full /sys/class/power_supply/*/charge_full_design; do
+  [ -r "$f" ] && echo "$f: $(cat $f 2>&1)"
+done
+echo "battery handed to Nihil: $BATT"
+ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE},${LIGHT},${NAP},${BATT},${LOOK}"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20

@@ -78,6 +78,7 @@ struct app {
     /* menu */
     uint32_t menu_sel;
     uint32_t light, warmth;
+    uint32_t battery;                       /* % when Nihil was started, above 100 = not known */
     /* file list */
     char path[APP_PATH_MAX];
     struct app_entry entries[APP_ENTRIES];
@@ -299,7 +300,7 @@ static void app_init(struct app *a, const struct app_mem *m, uint32_t pw, uint32
     a->m = *m;
     a->have_book = 0; a->title[0] = 0; a->note[0] = 0;
     a->page = 0; a->next_pos = 0;
-    a->menu_sel = 0; a->light = 0; a->warmth = 0; a->asleep = 0;
+    a->menu_sel = 0; a->light = 0; a->warmth = 0; a->asleep = 0; a->battery = 255;
     a->path[0] = 0;
     a->view = VIEW_FILES;
     a->book_path[0] = 0; a->book_hash = 0; a->book_stamp = 0; a->first_known = 0;
@@ -430,6 +431,13 @@ static void app_paint(struct app *a, volatile uint8_t *img)
         rd_footer(&a->rd, a->page + 1, a->next_pos);
     } else if (a->view == VIEW_MENU) {
         app_list_frame(a, "Nihil", "Short press: move.  Hold lower button: choose.  Hold upper button: close.");
+        if (a->battery <= 100) {                          /* small, at the right end of the title line */
+            char t[40], n[12];
+            app_copy(t, "Battery when started: ", sizeof t);
+            app_percent(n, a->battery);
+            app_cat(t, a->battery ? n : "0%", sizeof t);
+            rd_draw(&a->rd, a->rd.small, rd_page_w(&a->rd) - a->rd.margin_x - rd_width(a->rd.small, t), 73, t, 600);
+        }
         for (uint32_t i = 0; i < APP_MENU_N; i++) {
             char v[12];
             const char *right = 0;
