@@ -295,8 +295,11 @@ static int mmc_attach(void)
     mmc_log(T_MMC | 0x1B, mmc_rd(MR_RINTR));
     mmc_log(T_MMC | 0x1C, mmc_rd(MR_DMAC));
 
-    /* let whatever Linux had in flight finish */
-    if (mmc_wait_clear(MR_CMDR, MC_START, 1000000u) || mmc_wait_clear(MR_STAS, MS_FSM_BUSY | MS_CARD_BUSY, 1000000u)) {
+    /* Let whatever Linux had in flight finish. Only the chip's own busy line (bit 9) counts, exactly as
+     * in Kobo's kernel (sunxi_check_r1_ready) and bootloader. The controller's "data state machine busy"
+     * bit (10) is NOT a reason to wait: on the real Sage it stays set after Linux (status 0x9506, seen
+     * 21 Nov 2026), and Kobo's own drivers never look at it. */
+    if (mmc_wait_clear(MR_CMDR, MC_START, 1000000u) || mmc_wait_clear(MR_STAS, MS_CARD_BUSY, 1000000u)) {
         mmc_err(MMC_E_BUSY, mmc_rd(MR_STAS));
         return MMC_E_BUSY;
     }
@@ -308,17 +311,30 @@ static int mmc_attach(void)
     if (mmc_wait_clear(MR_GCTRL, MG_FIFO_RESET | MG_DMA_RESET, 250000u)) { mmc_err(MMC_E_RESET, 0); return MMC_E_RESET; }
     mmc_wr(MR_IDST, 0x337u);
     mmc_wr(MR_RINTR, 0xFFFFFFFFu);
+    mmc_log(T_MMC | 0x1D, mmc_rd(MR_STAS));                /* status after our set-up */
     mmc_log(T_MMC, 1);
 
+    /* If the controller does not get a clean answer, put the controller side in order once
+     * (mmc_recover: controller reset with its settings kept, chip settings untouched) and ask again. */
     uint32_t st = 0;
     int r = mmc_status(&st);
+    if (r) {
+        mmc_log(T_MMC | 0x1E, 1);                          /* first question failed, recovering */
+        r = mmc_recover();
+        if (r == MMC_OK) r = mmc_status(&st);
+    }
     mmc_log(T_MMC | 0x20, st);
     if (r) return r;
     if (MMC_STATE(st) != 4) { mmc_err(MMC_E_STATE, st); return MMC_E_STATE; }
     mmc_log(T_MMC, 2);
 
     r = mmc_data_cmd(8, 0, 1, ext);                        /* the chip's description of itself */
-    if (r) { mmc_recover(); return r; }
+    if (r) {
+        mmc_log(T_MMC | 0x1E, 2);                          /* first read failed, recovering */
+        if (mmc_recover() != MMC_OK) return r;
+        r = mmc_data_cmd(8, 0, 1, ext);
+        if (r) { mmc_recover(); return r; }
+    }
     uint32_t sec = ext[212] | (uint32_t)ext[213] << 8 | (uint32_t)ext[214] << 16 | (uint32_t)ext[215] << 24;
     mmc_log(T_MMC | 0x21, sec);                            /* size in blocks */
     mmc_log(T_MMC | 0x22, ext[179]);                       /* which area is selected (low 3 bits, 0 = normal) */
