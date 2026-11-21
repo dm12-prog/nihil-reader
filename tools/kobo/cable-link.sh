@@ -35,7 +35,7 @@ ifconfig usb0
 if [ -x "$K/dropbear" ]; then
   cd "$K" || exit 1
   mkdir -p settings/SSH
-  ./dropbear -E -R -p 2222 -P /tmp/dropbear_nihil.pid 2>>"$D/cable-link.log"
+  ./dropbear -E -R -s -p 2222 -P /tmp/dropbear_nihil.pid 2>>"$D/cable-link.log"
   echo "dropbear -> $?"
   sleep 1
   [ -s /tmp/dropbear_nihil.pid ] && echo "ssh server running, pid $(cat /tmp/dropbear_nihil.pid)"
