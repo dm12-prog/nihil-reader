@@ -6,7 +6,7 @@ ROT=1           # page direction on the panel: 1 or 3 = portrait (one of them is
 MODE=1          # 1 = GC16 (full 16-grey update), 3 = DU (fast black/white)
 NAP=1           # 1 = the processor core stands still while Nihil waits for a button, 0 = it runs flat out as before
 LIGHT=1         # 1 = Nihil drives the frontlight (menu: Light, Warmth), 0 = it leaves the light chips alone
-LOOK=0          # page look: 0 = plain (as it always was), 1 = Kobalt plus, 2 = Classic book, 3 = Bare
+LOOK=2          # page look: 0 = plain (as it always was), 1 = Kobalt plus, 2 = Classic book, 3 = Bare
 STORE=1         # 1 = Nihil reads the book library straight from the Kobo's storage chip (read-only), 0 = only the one book handed over in RAM
 D=/mnt/onboard/.adds/nihil
 mkdir /tmp/nihil.lock 2>/dev/null || exit 0     # a double tap must not start two runs
