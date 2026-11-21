@@ -6,4 +6,6 @@ date
 insmod "$D/nihil_chainload.ko" readlog=1
 echo "insmod returned $? (non-zero is expected)"
 dmesg | grep "nihil-bb"
+# also keep the reading places of that run (see positions.sh)
+sh "$D/positions.sh"
 sync

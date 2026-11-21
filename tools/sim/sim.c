@@ -22,6 +22,31 @@
 #include <sys/stat.h>
 #include "../../core/app.h"
 #include "../../core/library.h"
+#include "../../core/posbox.h"
+
+/* The reading places, kept the way the Sage keeps them: as the first pairs of
+ * a "black box". At the end they are written out in the same form Kobo's
+ * kernel log shows them, so tools/kobo/positions.sh can be tested on a PC. */
+static uint32_t box[POSBOX_PAIRS * 2];
+static void hal_pos_save(const struct pos_rec *r, const char *path, uint32_t light, uint32_t warmth)
+{
+    posbox_save(box, r, path, light, warmth);
+}
+static void box_write(const char *prefix)
+{
+    char name[512];
+    snprintf(name, sizeof name, "%s-blackbox.txt", prefix);
+    FILE *f = fopen(name, "w");
+    if (!f) return;
+    fprintf(f, "nihil-bb: magic=4e49484c version=3 cntfrq=24000000 events=%u end=d0ae0000 button=00000000\n", POSBOX_PAIRS);
+    uint32_t i = 0;
+    for (; i + 3 < POSBOX_PAIRS; i += 4)
+        fprintf(f, "nihil-bb: r %08x=%08x %08x=%08x %08x=%08x %08x=%08x\n", box[i * 2], box[i * 2 + 1], box[i * 2 + 2],
+                box[i * 2 + 3], box[i * 2 + 4], box[i * 2 + 5], box[i * 2 + 6], box[i * 2 + 7]);
+    for (; i < POSBOX_PAIRS; i++)
+        fprintf(f, "nihil-bb: r %08x=%08x\n", box[i * 2], box[i * 2 + 1]);
+    fclose(f);
+}
 
 #define PW 1920
 #define PH 1440
@@ -120,6 +145,7 @@ int main(int argc, char **argv)
     static uint32_t pages[1 << 20];
     static struct app a;
     struct app_mem m = { file, sizeof file, work, sizeof work, text, sizeof text, pages, 1 << 20 };
+    posbox_init(box);
     app_init(&a, &m, PW, PH, argc > 4 ? (uint32_t)atoi(argv[4]) : 1);
     memset(img, 255, sizeof img);
     app_paint(&a, img);
@@ -136,5 +162,6 @@ int main(int argc, char **argv)
         }
         save(&a, argv[3], n, *k);
     }
+    box_write(argv[3]);
     return 0;
 }

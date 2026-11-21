@@ -38,6 +38,28 @@ static int hal_read_file(const char *path, uint8_t *buf, uint32_t max, uint32_t 
 static void hal_set_light(uint32_t brightness, uint32_t warmth);
 /* hal_busy(): see epub.h. */
 
+/* ---- reading positions ----
+ * The app never stores anything itself. After every page turn it tells the
+ * platform "this book is now here" (hal_pos_save), and at start it reads the
+ * list of places from a small text file (POS_FILE) like any other file.
+ * On the Sage the platform keeps the latest places in RAM, and Kobo's own
+ * Linux copies them into the file the next time it runs (tools/kobo/positions.sh).
+ * So Nihil's storage driver stays read-only.
+ *
+ * POS_FILE, one record per line, numbers in hex:
+ *   P <path hash> <text offset> <page number> <stamp> <check>
+ *   L <length> <path hash> <path bytes, 4 per word, low byte first>   the book read last
+ *   S <light> <warmth>
+ */
+#define POS_FILE     ".adds/nihil/positions.txt"
+#define POS_MAX      256
+#define POS_PATH_MAX 240           /* longest path that can be remembered as "the book read last" */
+#define POS_MAGIC    0x504F5331u   /* "POS1" */
+#define POS_TEXT_VERSION 1u        /* raise when the way a book becomes text changes (offsets move) */
+struct pos_rec { uint32_t hash, off, page, stamp; };
+/* Remember: the book at `path` is at this place (r = 0: no book open); light settings as given. */
+static void hal_pos_save(const struct pos_rec *r, const char *path, uint32_t light, uint32_t warmth);
+
 struct app_mem {                   /* working memory handed over by the platform */
     uint8_t *file; uint32_t file_max;       /* a book file as it is on disk */
     uint8_t *work; uint32_t work_max;       /* scratch for unpacking */
@@ -62,6 +84,13 @@ struct app {
     uint32_t count, sel, top;
     int asleep;                             /* cover closed */
     char note[APP_NAME_MAX + 32];           /* one-line message, e.g. why a book did not open */
+    /* reading positions */
+    struct pos_rec pos[POS_MAX];
+    uint32_t pos_n;
+    char book_path[APP_PATH_MAX];
+    uint32_t book_hash, book_stamp;
+    uint32_t first_known;                   /* page starts below this page number are not worked out yet */
+    char last_path[POS_PATH_MAX + 1];       /* the book read last, "" = none */
 };
 
 static void app_copy(char *d, const char *s, uint32_t max)
@@ -74,6 +103,113 @@ static void app_cat(char *d, const char *s, uint32_t max)
 {
     uint32_t n = rd_strlen(d);
     app_copy(d + n, s, max - n);
+}
+
+/* ---------- reading positions ---------- */
+static uint32_t pos_hash(const char *s)                   /* FNV-1a, never 0 */
+{
+    uint32_t h = 2166136261u;
+    for (; *s; s++) { h ^= (uint8_t)*s; h *= 16777619u; }
+    return h ? h : 1u;
+}
+static uint32_t pos_check(const struct pos_rec *r)
+{
+    uint32_t c = POS_MAGIC ^ r->hash;
+    c = (c << 5 | c >> 27) ^ r->off;
+    c = (c << 5 | c >> 27) ^ r->page;
+    c = (c << 5 | c >> 27) ^ r->stamp;
+    return c * 2654435761u;
+}
+/* A number that changes whenever pages would break differently: page shape, margins, fonts, book length. */
+static uint32_t pos_stamp(const struct reader *r, uint32_t text_len)
+{
+    const uint32_t v[] = { rd_page_w(r), rd_page_h(r), r->margin_x, r->margin_top, r->margin_bottom, r->line_h,
+                           r->indent, r->footer_h, (uint32_t)r->justify, r->body->size, r->ital->size,
+                           r->head->size, r->body->nglyphs, POS_TEXT_VERSION, text_len };
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < sizeof v / sizeof v[0]; i++) { h ^= v[i]; h *= 16777619u; }
+    return h;
+}
+static struct pos_rec *pos_find(struct app *a, uint32_t hash)
+{
+    for (uint32_t i = 0; i < a->pos_n; i++)
+        if (a->pos[i].hash == hash) return &a->pos[i];
+    return 0;
+}
+static int pos_hex(const uint8_t *d, uint32_t len, uint32_t *i, uint32_t *out)   /* next hex number on this line */
+{
+    uint32_t v = 0, n = 0;
+    while (*i < len && d[*i] == ' ') (*i)++;
+    for (; *i < len; (*i)++, n++) {
+        uint32_t c = d[*i], x;
+        if (c >= '0' && c <= '9') x = c - '0';
+        else if (c >= 'a' && c <= 'f') x = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') x = c - 'A' + 10;
+        else break;
+        v = v << 4 | x;
+    }
+    *out = v;
+    return n > 0 && n <= 8;
+}
+/* Reads POS_FILE. A missing or damaged file just means "no places known". */
+static void pos_load(struct app *a)
+{
+    uint32_t len = 0, i = 0;
+    a->pos_n = 0; a->last_path[0] = 0;
+    uint32_t max = a->m.work_max < 65536u ? a->m.work_max : 65536u;
+    if (hal_read_file(POS_FILE, a->m.work, max, &len) || len == 0) return;
+    const uint8_t *d = a->m.work;
+    while (i < len) {
+        uint8_t kind = d[i++];
+        if (kind == 'P') {
+            struct pos_rec r; uint32_t chk;
+            if (pos_hex(d, len, &i, &r.hash) && pos_hex(d, len, &i, &r.off) && pos_hex(d, len, &i, &r.page) &&
+                pos_hex(d, len, &i, &r.stamp) && pos_hex(d, len, &i, &chk) && chk == pos_check(&r) &&
+                a->pos_n < POS_MAX && !pos_find(a, r.hash))
+                a->pos[a->pos_n++] = r;
+        } else if (kind == 'L') {
+            uint32_t n, h, w;
+            char path[POS_PATH_MAX + 4];
+            if (pos_hex(d, len, &i, &n) && pos_hex(d, len, &i, &h) && n > 0 && n <= POS_PATH_MAX) {
+                uint32_t k = 0;
+                while (k < n && pos_hex(d, len, &i, &w)) {
+                    for (uint32_t b = 0; b < 4; b++) path[k++] = (char)(w >> (8 * b));
+                }
+                if (k >= n) {
+                    path[n] = 0;
+                    if (rd_strlen(path) == n && pos_hash(path) == h) app_copy(a->last_path, path, sizeof a->last_path);
+                }
+            }
+        } else if (kind == 'S') {
+            uint32_t l, w;
+            if (pos_hex(d, len, &i, &l) && pos_hex(d, len, &i, &w) && l <= 100 && w <= 100) { a->light = l; a->warmth = w; }
+        }
+        while (i < len && d[i] != '\n') i++;              /* rest of the line */
+        i++;
+    }
+}
+/* Tell the platform where the open book is now. */
+static void app_pos_note(struct app *a)
+{
+    if (!a->have_book) { hal_pos_save(0, "", a->light, a->warmth); return; }
+    struct pos_rec r = { a->book_hash, a->m.pages[a->page], a->page, a->book_stamp };
+    struct pos_rec *p = pos_find(a, r.hash);
+    if (!p) p = &a->pos[a->pos_n < POS_MAX ? a->pos_n++ : POS_MAX - 1];
+    *p = r;
+    hal_pos_save(&r, a->book_path, a->light, a->warmth);
+}
+/* Works out every page start from the beginning of the book up to the page that holds `off`. */
+static void app_pages_upto(struct app *a, uint32_t off)
+{
+    uint32_t i = 0;
+    a->m.pages[0] = 0;
+    while (i + 1 < a->m.pages_max) {
+        uint32_t next = rd_page(&a->rd, a->m.pages[i], 0);
+        if (next > off || next >= a->rd.len) break;
+        a->m.pages[++i] = next;
+        if (!(i & 15u)) hal_busy();
+    }
+    a->page = i; a->first_known = 0;
 }
 
 static void app_load_dir(struct app *a)
@@ -125,9 +261,24 @@ static int app_open(struct app *a, const char *path, const char *name)
     }
     app_copy(a->title, title[0] ? title : name, sizeof a->title);
     a->rd.text = a->m.text; a->rd.len = tlen;
-    a->page = 0; a->m.pages[0] = 0; a->next_pos = 0;
+    a->page = 0; a->m.pages[0] = 0; a->next_pos = 0; a->first_known = 0;
     a->have_book = 1;
     a->view = VIEW_BOOK;
+    /* back to where this book was left */
+    app_copy(a->book_path, path, sizeof a->book_path);
+    a->book_hash = pos_hash(path);
+    a->book_stamp = pos_stamp(&a->rd, tlen);
+    const struct pos_rec *p = pos_find(a, a->book_hash);
+    if (p && p->off > 0 && p->off < tlen) {
+        if (p->stamp == a->book_stamp && p->page > 0 && p->page < a->m.pages_max) {
+            a->page = p->page;                             /* same page look as last time: jump straight there */
+            a->m.pages[a->page] = p->off;
+            a->first_known = a->page;
+        } else {
+            app_pages_upto(a, p->off);                     /* page look changed: find the page that holds the place */
+        }
+    }
+    app_pos_note(a);
     return 0;
 }
 
@@ -142,7 +293,15 @@ static void app_init(struct app *a, const struct app_mem *m, uint32_t pw, uint32
     a->menu_sel = 0; a->light = 0; a->warmth = 0; a->asleep = 0;
     a->path[0] = 0;
     a->view = VIEW_FILES;
+    a->book_path[0] = 0; a->book_hash = 0; a->book_stamp = 0; a->first_known = 0;
+    pos_load(a);
+    if (a->light) hal_set_light(a->light, a->warmth);
     app_load_dir(a);
+    if (a->last_path[0]) {                                /* straight back into the book read last */
+        const char *name = a->last_path;
+        for (const char *c = a->last_path; *c; c++) if (*c == '/') name = c + 1;
+        if (app_open(a, a->last_path, name)) a->note[0] = 0;   /* gone? then just show the library */
+    }
 }
 
 /* ---------- painting ---------- */
@@ -259,11 +418,16 @@ static int app_key(struct app *a, enum app_key k)
                 return APP_SAME;                          /* last page */
             a->page++;
             a->m.pages[a->page] = a->next_pos;
+            app_pos_note(a);
             return APP_REDRAW;
         }
         if (k == KEY_BACK) {
             if (a->page == 0) return APP_SAME;
+            if (a->page <= a->first_known)                /* earlier pages not worked out yet (book was reopened) */
+                app_pages_upto(a, a->m.pages[a->page]);
+            if (a->page == 0) return APP_REDRAW;
             a->page--;
+            app_pos_note(a);
             return APP_REDRAW;
         }
         if (k == KEY_BACK_HOLD) { a->view = VIEW_MENU; a->menu_sel = 0; a->note[0] = 0; return APP_REDRAW; }
@@ -278,8 +442,8 @@ static int app_key(struct app *a, enum app_key k)
             return APP_REDRAW;
         }
         if (a->menu_sel == 1) { a->view = VIEW_FILES; a->note[0] = 0; app_load_dir(a); return APP_REDRAW; }
-        if (a->menu_sel == 2) { app_step(&a->light, 1); hal_set_light(a->light, a->warmth); return APP_REDRAW; }
-        if (a->menu_sel == 3) { app_step(&a->warmth, 1); hal_set_light(a->light, a->warmth); return APP_REDRAW; }
+        if (a->menu_sel == 2) { app_step(&a->light, 1); hal_set_light(a->light, a->warmth); app_pos_note(a); return APP_REDRAW; }
+        if (a->menu_sel == 3) { app_step(&a->warmth, 1); hal_set_light(a->light, a->warmth); app_pos_note(a); return APP_REDRAW; }
         return APP_LEAVE;
     }
     /* file list */

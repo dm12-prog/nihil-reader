@@ -118,6 +118,12 @@ done
 for p in /sys/block/mmcblk0/mmcblk0p*; do echo "$p start=$(cat $p/start) size=$(cat $p/size)"; done
 mount -t debugfs none /sys/kernel/debug 2>/dev/null
 cat /sys/kernel/debug/mmc*/ios 2>&1
+echo "--- reading places ---"
+# Nihil keeps the places of the books being read in RAM (it cannot write to
+# storage). Copy the ones from the last run into positions.txt now, so this
+# run opens the last book where it was left.
+insmod "$D/nihil_chainload.ko" readlog=1 2>/dev/null
+sh "$D/positions.sh"
 echo "--- real run ---"
 # Ask Linux to hand everything it has already saved over to the storage chip
 # for good (the chip keeps recent saves in a short-term memory of its own).

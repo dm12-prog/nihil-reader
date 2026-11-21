@@ -23,6 +23,7 @@
  */
 #include "sage.h"
 #include "../../core/app.h"
+#include "../../core/posbox.h"
 
 /* ---------- time ---------- */
 static uint64_t ticks(void)
@@ -574,6 +575,8 @@ static int hal_list_dir(const char *path, struct app_entry *out, int max)
 }
 static int hal_read_file(const char *path, uint8_t *buf, uint32_t max, uint32_t *len)
 {
+    if (!name_is_handed(path) && !g_lib)
+        return -1;                                            /* no storage: only the handed book exists */
     if (g_lib && !name_is_handed(path)) {
         uint32_t t = now_us();
         int r = lib_read_file(path, buf, max, len);
@@ -660,6 +663,11 @@ static void hal_set_light(uint32_t brightness, uint32_t warmth)
     wdt_feed();
 }
 static void hal_busy(void) { wdt_feed(); }
+/* Reading places: kept in the first pairs of the black box (RAM only). Kobo's Linux saves them later. */
+static void hal_pos_save(const struct pos_rec *r, const char *path, uint32_t light, uint32_t warmth)
+{
+    posbox_save(&bb[BLACKBOX_EVENTS], r, path, light, warmth);
+}
 
 __attribute__((noreturn)) int main(void)
 {
@@ -669,6 +677,9 @@ __attribute__((noreturn)) int main(void)
         bb[i] = 0;
     bb[1] = 3;
     bb[2] = 24000000u;
+    posbox_init(&bb[BLACKBOX_EVENTS]);                        /* the first pairs are the reading places */
+    npairs = POSBOX_PAIRS;
+    bb[3] = npairs;
     bb[0] = BLACKBOX_MAGIC;
 
     /* --- 1. boot parameters --- */
@@ -831,9 +842,12 @@ __attribute__((noreturn)) int main(void)
     static struct app app;
     struct app_mem mem = { (uint8_t *)APP_FILE, APP_FILE_MAX, (uint8_t *)APP_WORK, APP_WORK_MAX,
                            (uint8_t *)APP_TEXT, APP_TEXT_MAX, (volatile uint32_t *)PAGE_TAB, PAGE_TAB_MAX };
-    app_init(&app, &mem, PANEL_W, PANEL_H, p_rot);
     uint32_t tr = now_us();
-    if (book_len)
+    app_init(&app, &mem, PANEL_W, PANEL_H, p_rot);            /* also reopens the book read last, at its place */
+    lg(T_POS | 0x400, app.pos_n);                             /* places known from the positions file */
+    lg(T_POS | 0x401, app.have_book ? app.page : 0xFFFFFFFFu);/* page the last book was reopened at */
+    lg(T_POS | 0x402, now_us() - tr);
+    if (book_len && !app.have_book)
         app_open(&app, HANDED_NAME, HANDED_NAME);             /* straight into the book the loader handed over */
     lg(T_READ | 0x22, now_us() - tr);                         /* time to open the book */
     lg(T_READ | 0x23, app.rd.len);
