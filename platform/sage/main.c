@@ -843,7 +843,7 @@ __attribute__((noreturn)) int main(void)
     struct app_mem mem = { (uint8_t *)APP_FILE, APP_FILE_MAX, (uint8_t *)APP_WORK, APP_WORK_MAX,
                            (uint8_t *)APP_TEXT, APP_TEXT_MAX, (volatile uint32_t *)PAGE_TAB, PAGE_TAB_MAX };
     uint32_t tr = now_us();
-    app_init(&app, &mem, PANEL_W, PANEL_H, p_rot);            /* also reopens the book read last, at its place */
+    app_init(&app, &mem, PANEL_W, PANEL_H, p_rot, 0);           /* also reopens the book read last, at its place */
     lg(T_POS | 0x400, app.pos_n);                             /* places known from the positions file */
     lg(T_POS | 0x401, app.have_book ? app.page : 0xFFFFFFFFu);/* page the last book was reopened at */
     lg(T_POS | 0x402, now_us() - tr);

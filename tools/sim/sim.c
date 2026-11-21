@@ -10,6 +10,7 @@
  *           c = close the cover, o = open the cover
  *     writes <prefix>-000.pgm (first screen), <prefix>-001.pgm (after key 1) ...
  *     Pictures are written upright (the way the reader holds the device).
+ *     NIHIL_LOOK=1..3 in the environment picks another page look (see rd_set_look).
  *
  * It simulates the screen's size, the two buttons and a folder of books.
  * It does NOT simulate the Sage's hardware (e-ink waveforms, power chip, storage).
@@ -126,7 +127,11 @@ static void save(const struct app *a, const char *prefix, int n, char key)
     fclose(f);
     static const char *const views[] = { "book", "menu", "files" };
     printf("%s: key '%c' -> %s", name, key, views[a->view]);
-    if (a->view == VIEW_BOOK) printf(" \"%s\" page %u", a->title, a->page + 1);
+    if (a->view == VIEW_BOOK) {
+        printf(" \"%s\" page %u", a->title, a->page + 1);
+        if (getenv("NIHIL_SIM_OFFSETS"))                   /* for picking sample pages: where the page starts and ends */
+            printf(" [text %u..%u%s]", a->m.pages[a->page], a->next_pos, a->rd.text[a->m.pages[a->page]] < 32 ? " opens with a mark" : "");
+    }
     if (a->view == VIEW_FILES) printf(" \"%s\" %u entries, chosen %u", a->path, a->count, a->sel);
     if (a->asleep) printf(" [asleep]");
     printf("\n");
@@ -146,7 +151,7 @@ int main(int argc, char **argv)
     static struct app a;
     struct app_mem m = { file, sizeof file, work, sizeof work, text, sizeof text, pages, 1 << 20 };
     posbox_init(box);
-    app_init(&a, &m, PW, PH, argc > 4 ? (uint32_t)atoi(argv[4]) : 1);
+    app_init(&a, &m, PW, PH, argc > 4 ? (uint32_t)atoi(argv[4]) : 1, getenv("NIHIL_LOOK") ? (uint32_t)atoi(getenv("NIHIL_LOOK")) : 0);
     memset(img, 255, sizeof img);
     app_paint(&a, img);
     save(&a, argv[3], 0, '-');

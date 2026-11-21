@@ -91,6 +91,9 @@ struct app {
     uint32_t book_hash, book_stamp;
     uint32_t first_known;                   /* page starts below this page number are not worked out yet */
     char last_path[POS_PATH_MAX + 1];       /* the book read last, "" = none */
+    /* running header: the chapter heading in force at text offset chap_at */
+    char chapter[160];
+    uint32_t chap_at, chap_off;             /* chap_off = where that heading starts, 0xFFFFFFFF = none yet */
 };
 
 static void app_copy(char *d, const char *s, uint32_t max)
@@ -128,6 +131,10 @@ static uint32_t pos_stamp(const struct reader *r, uint32_t text_len)
                            r->head->size, r->body->nglyphs, POS_TEXT_VERSION, text_len };
     uint32_t h = 2166136261u;
     for (uint32_t i = 0; i < sizeof v / sizeof v[0]; i++) { h ^= v[i]; h *= 16777619u; }
+    if (r->header_h | r->sink | r->head_gap | r->flush_first) {   /* a look other than the plain one */
+        const uint32_t x[] = { r->header_h, r->sink, r->head_gap, r->flush_first };
+        for (uint32_t i = 0; i < 4; i++) { h ^= x[i]; h *= 16777619u; }
+    }
     return h;
 }
 static struct pos_rec *pos_find(struct app *a, uint32_t hash)
@@ -264,6 +271,7 @@ static int app_open(struct app *a, const char *path, const char *name)
     a->page = 0; a->m.pages[0] = 0; a->next_pos = 0; a->first_known = 0;
     a->have_book = 1;
     a->view = VIEW_BOOK;
+    a->chapter[0] = 0; a->chap_at = 0; a->chap_off = 0xFFFFFFFFu;
     /* back to where this book was left */
     app_copy(a->book_path, path, sizeof a->book_path);
     a->book_hash = pos_hash(path);
@@ -282,11 +290,12 @@ static int app_open(struct app *a, const char *path, const char *name)
     return 0;
 }
 
-static void app_init(struct app *a, const struct app_mem *m, uint32_t pw, uint32_t ph, uint32_t rot)
+static void app_init(struct app *a, const struct app_mem *m, uint32_t pw, uint32_t ph, uint32_t rot, uint32_t look)
 {
     a->rd.pw = pw; a->rd.ph = ph; a->rd.rot = rot;
     a->rd.text = m->text; a->rd.len = 0;
-    rd_defaults(&a->rd);
+    rd_set_look(&a->rd, look);                            /* 0 = the plain look */
+    a->chapter[0] = 0; a->chap_at = 0; a->chap_off = 0xFFFFFFFFu;
     a->m = *m;
     a->have_book = 0; a->title[0] = 0; a->note[0] = 0;
     a->page = 0; a->next_pos = 0;
@@ -313,31 +322,82 @@ static uint32_t app_rows(const struct app *a)
     return (rd_page_h(&a->rd) - LIST_TOP - 110u) / LIST_ROW;
 }
 
-/* A list screen: title, rows (left text, optional right text), a frame around the chosen row, hints. */
+/* A list screen: title, rows (left text, optional right text), a mark on the chosen row, hints.
+ * How the chosen row is marked depends on the page look (rd.list). */
 static void app_list_frame(const struct app *a, const char *title, const char *hint)
 {
     const struct reader *r = &a->rd;
-    uint32_t w = rd_page_w(r), h = rd_page_h(r), m = r->margin_x;
-    rd_draw(r, r->head, m, 50, title, w - 2 * m);
-    rd_rect(r, m, 150, w - 2 * m, 4, 15);
+    uint32_t w = rd_page_w(r), h = rd_page_h(r), m = r->margin_x, tw = w - 2 * m;
+    if (r->list == 2) {                                   /* classic: everything centred */
+        rd_draw(r, r->head, m + (tw - rd_drawn_width(r->head, title, tw)) / 2, 44, title, tw);
+        rd_rect(r, w / 2 - 60, 150, 120, 3, 15);
+        if (a->note[0])
+            rd_draw(r, r->small, m + (tw - rd_drawn_width(r->small, a->note, tw)) / 2, h - 130, a->note, tw);
+        rd_draw(r, r->note, m + (tw - rd_drawn_width(r->note, hint, tw)) / 2, h - 70, hint, tw);
+        return;
+    }
+    rd_draw(r, r->head, m, r->list == 3 ? 44 : 50, title, tw);
+    if (r->list != 3)
+        rd_rect(r, m, 150, tw, 4, 15);
     if (a->note[0])
-        rd_draw(r, r->small, m, h - 130, a->note, w - 2 * m);
-    rd_draw(r, r->small, m, h - 70, hint, w - 2 * m);
+        rd_draw(r, r->small, m, h - 130, a->note, tw);
+    rd_draw(r, r->small, m, h - 70, hint, tw);
 }
 static void app_list_row(const struct app *a, uint32_t row, const char *left, const char *right, int chosen)
 {
-    const struct reader *r = &a->rd;
+    struct reader pen = a->rd;                            /* a copy, so one row can be drawn white on black */
+    const struct reader *r = &pen;
     uint32_t w = rd_page_w(r), m = r->margin_x, y = LIST_TOP + row * LIST_ROW;
     uint32_t rw = right ? rd_width(r->body, right) : 0;
-    rd_draw(r, r->body, m + 30, y + 18, left, w - 2 * m - 60 - (rw ? rw + 40 : 0));
+    uint32_t pad = r->list == 2 ? 56 : r->list == 3 ? 44 : 30;
+    if (r->list == 1 && chosen) {                         /* black bar, white text */
+        rd_rect(r, m, y + 2, w - 2 * m, LIST_ROW - 8, 15);
+        pen.invert = 1;
+    }
+    rd_draw(r, r->body, m + pad, y + 18, left, w - 2 * m - pad - 30 - (rw ? rw + 40 : 0));
     if (right)
         rd_draw(r, r->body, w - m - 30 - rw, y + 18, right, rw + 10);
-    if (chosen) {                                         /* frame: 5 px lines */
+    pen.invert = 0;
+    if (r->list == 2) {                                   /* hairline under every row, a triangle at the chosen one */
+        rd_rect(r, m, y + LIST_ROW - 5, w - 2 * m, 2, 5);
+        if (chosen)
+            for (uint32_t i = 0; i < 26; i++)
+                rd_rect(r, m + 10, y + 34 + i, i < 13 ? 2 * i + 2 : 2 * (25 - i) + 2, 1, 15);
+    }
+    if (r->list == 3 && chosen)                           /* a thick bar beside the chosen row */
+        rd_rect(r, m, y + 8, 12, LIST_ROW - 20, 15);
+    if (r->list == 0 && chosen) {                         /* frame: 5 px lines */
         rd_rect(r, m, y, w - 2 * m, 5, 15);
         rd_rect(r, m, y + LIST_ROW - 9, w - 2 * m, 5, 15);
         rd_rect(r, m, y, 5, LIST_ROW - 4, 15);
         rd_rect(r, w - m - 5, y, 5, LIST_ROW - 4, 15);
     }
+}
+
+/* The chapter heading in force at text offset p, into a->chapter ("" when there is none).
+ * Going forward it only looks at the text passed since last time. */
+static void app_chapter(struct app *a, uint32_t p)
+{
+    const uint8_t *t = a->rd.text;
+    uint32_t found = 0xFFFFFFFFu;
+    if (p >= a->chap_at) {
+        found = a->chap_off;
+        for (uint32_t i = a->chap_at; i < p; i++)
+            if (t[i] == RD_HEAD) found = i;
+    } else {
+        for (uint32_t i = p; i > 0; i--)
+            if (t[i - 1] == RD_HEAD) { found = i - 1; break; }
+    }
+    a->chap_at = p;
+    if (found == a->chap_off)
+        return;
+    a->chap_off = found;
+    uint32_t n = 0;
+    for (uint32_t i = found; found != 0xFFFFFFFFu && i < a->rd.len && t[i] != '\n' && n + 5 < sizeof a->chapter; i++)
+        if (t[i] >= 32) a->chapter[n++] = (char)t[i];
+    while (n > 0 && (a->chapter[n - 1] & 0xC0) == 0x80) n--;      /* never end in half a letter */
+    if (n > 0 && (a->chapter[n - 1] & 0xC0) == 0xC0) n--;
+    a->chapter[n] = 0;
 }
 
 static const char *const app_menu_items[] = { "Back to the book", "Library", "Light", "Warmth", "Leave Nihil" };
@@ -358,7 +418,15 @@ static void app_paint(struct app *a, volatile uint8_t *img)
 {
     a->rd.img = img;
     if (a->view == VIEW_BOOK) {
-        a->next_pos = rd_page(&a->rd, a->m.pages[a->page], 1);
+        uint32_t p = a->m.pages[a->page];
+        if (a->rd.header_h) {                             /* running header, but not on a page a chapter opens */
+            uint32_t q = p;
+            int head = 0, ni, it;
+            while (q < a->rd.len && (a->rd.text[q] == '\n' || a->rd.text[q] == '\r' || a->rd.text[q] == RD_BREAK)) q++;
+            if (q < a->rd.len) rd_style_at(&a->rd, q, &head, &ni, &it);
+            if (!head) { app_chapter(a, p); rd_header(&a->rd, a->title, a->chapter); }
+        }
+        a->next_pos = rd_page(&a->rd, p, 1);
         rd_footer(&a->rd, a->page + 1, a->next_pos);
     } else if (a->view == VIEW_MENU) {
         app_list_frame(a, "Nihil", "Short press: move.  Hold lower button: choose.  Hold upper button: close.");
@@ -378,7 +446,14 @@ static void app_paint(struct app *a, volatile uint8_t *img)
             rd_draw(&a->rd, a->rd.body, a->rd.margin_x + 30, LIST_TOP + 18, "No books in this folder.", 1000);
         for (uint32_t i = 0; i < rows && a->top + i < a->count; i++) {
             const struct app_entry *e = &a->entries[a->top + i];
-            app_list_row(a, i, e->name, e->is_dir ? ">" : 0, a->top + i == a->sel);
+            char shown[APP_NAME_MAX];
+            app_copy(shown, e->name, sizeof shown);
+            if (a->rd.list && !e->is_dir) {               /* the newer looks leave ".epub" / ".txt" off */
+                uint32_t n = rd_strlen(shown);
+                while (n > 1 && shown[n - 1] != '.') n--;
+                if (n > 1) shown[n - 1] = 0;
+            }
+            app_list_row(a, i, shown, e->is_dir ? ">" : 0, a->top + i == a->sel);
         }
         if (a->count > rows) {                            /* scroll mark on the right edge */
             uint32_t h = rows * LIST_ROW, bar = h * rows / a->count, off = h * a->top / a->count;

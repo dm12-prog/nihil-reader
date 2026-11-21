@@ -30,6 +30,18 @@ struct reader {
     uint32_t footer_h;          /* room kept under the text for the footer line */
     int justify;                /* 1 = stretch lines to both margins, 0 = ragged right */
     const struct font *body, *ital, *head, *small;
+    /* Page look. All zero = the plain look (rd_defaults). See rd_set_look. */
+    const struct font *note;    /* small italic, for the running header */
+    uint32_t header_h;          /* room kept above the text for the running header, 0 = none */
+    uint32_t sink;              /* empty space above a heading that opens a page */
+    uint32_t head_gap;          /* space under the last heading line, 0 = as before */
+    uint8_t header;             /* 1 = chapter (or book) centred, 2 = book left + chapter right */
+    uint8_t footer;             /* 0 = page left + % right, 1 = page number centred, 2 = progress line only */
+    uint8_t head_left;          /* 1 = headings start at the left margin (0 = centred) */
+    uint8_t head_rule;          /* line under a chapter heading: 1 = short and centred, 2 = full width */
+    uint8_t flush_first;        /* 1 = no indent on the paragraph right after a heading */
+    uint8_t list;               /* list screens: 0 = frame, 1 = black bar, 2 = marker + hairlines, 3 = side bar */
+    uint8_t invert;             /* 1 = draw white on black (inside a black bar) */
 };
 
 static uint32_t rd_page_w(const struct reader *r) { return (r->rot & 1) ? r->ph : r->pw; }
@@ -46,8 +58,14 @@ static void rd_ink(const struct reader *r, uint32_t x, uint32_t y, uint32_t ink)
     case 3:  X = y;             Y = r->ph - 1 - x; break;
     default: X = x;             Y = y;             break;
     }
-    uint8_t v = (uint8_t)(255u - ink * 17u);
     volatile uint8_t *p = &r->img[Y * r->pw + X];
+    if (r->invert) {                                      /* white ink: only ever lightens */
+        uint8_t v = (uint8_t)(ink * 17u);
+        if (v > *p)
+            *p = v;
+        return;
+    }
+    uint8_t v = (uint8_t)(255u - ink * 17u);
     if (v < *p)
         *p = v;
 }
@@ -145,6 +163,22 @@ static uint32_t rd_draw(const struct reader *r, const struct font *f, uint32_t x
     return x;
 }
 
+/* The width rd_draw will use for s (the cut one when s is wider than max_w). */
+static uint32_t rd_drawn_width(const struct font *f, const char *s, uint32_t max_w)
+{
+    uint32_t p = 0, n = rd_strlen(s), x = 0, dots = rd_glyph(f, 0x2026)->adv;
+    if (rd_width(f, s) <= max_w)
+        return rd_width(f, s);
+    while (p < n) {
+        uint32_t c = rd_utf8((const uint8_t *)s, n, &p);
+        if (c < 32) continue;
+        if (x + rd_glyph(f, c)->adv + dots > max_w)
+            return x + dots;
+        x += rd_glyph(f, c)->adv;
+    }
+    return x;
+}
+
 /* What style is in force at text offset pos (start of a line)? Looks back to
  * the start of the paragraph: styles never carry across paragraphs. */
 static void rd_style_at(const struct reader *r, uint32_t pos, int *heading, int *noindent, int *ital)
@@ -165,6 +199,19 @@ static void rd_style_at(const struct reader *r, uint32_t pos, int *heading, int 
     }
 }
 
+/* Is the paragraph that starts at pos the first one after a heading? */
+static int rd_after_heading(const struct reader *r, uint32_t pos)
+{
+    uint32_t p = pos;
+    while (p > 0 && (r->text[p - 1] == '\n' || r->text[p - 1] == '\r' || r->text[p - 1] == RD_BREAK))
+        p--;                                              /* p = end of the paragraph before */
+    while (p > 0 && r->text[p - 1] != '\n') {
+        p--;
+        if (r->text[p] == RD_HEAD) return 1;
+    }
+    return 0;
+}
+
 static uint32_t rd_line_height(const struct reader *r, int heading)
 {
     return heading ? r->head->size * 3u / 2u : r->line_h;
@@ -180,7 +227,7 @@ static uint32_t rd_line(const struct reader *r, uint32_t pos, uint32_t y, int dr
     int para_start = pos == 0 || r->text[pos - 1] == '\n' || r->text[pos - 1] == RD_BREAK;
     int heading, noindent, ital0;
     rd_style_at(r, pos, &heading, &noindent, &ital0);
-    if (para_start && !heading && !noindent) { x0 += r->indent; width -= r->indent; }
+    if (para_start && !heading && !noindent && !(r->flush_first && rd_after_heading(r, pos))) { x0 += r->indent; width -= r->indent; }
 
     /* pass 1: how much fits */
     uint32_t p = pos, used = 0, gaps = 0;
@@ -230,7 +277,7 @@ static uint32_t rd_line(const struct reader *r, uint32_t pos, uint32_t y, int dr
     uint32_t extra = (justify && gaps && width > used) ? width - used : 0;
     if (extra > width / 4)
         extra = 0;                                        /* too loose: leave it ragged */
-    uint32_t x = heading && width > used ? x0 + (width - used) / 2 : x0, gap_i = 0, acc = 0;
+    uint32_t x = heading && !r->head_left && width > used ? x0 + (width - used) / 2 : x0, gap_i = 0, acc = 0;
     if (heading)
         y += (rd_line_height(r, 1) - r->head->size) / 2;  /* sit in the middle of its taller line */
     in_space = 1; ital = ital0;
@@ -265,7 +312,7 @@ static uint32_t rd_line(const struct reader *r, uint32_t pos, uint32_t y, int dr
  * draw = 0). Returns the offset where the following page starts. */
 static uint32_t rd_page(const struct reader *r, uint32_t pos, int draw)
 {
-    uint32_t top = r->margin_top, y = top, bottom = rd_page_h(r) - r->margin_bottom - r->footer_h;
+    uint32_t top = r->margin_top + r->header_h, y = top, bottom = rd_page_h(r) - r->margin_bottom - r->footer_h;
     while (pos < r->len) {
         uint8_t c = r->text[pos];
         if (c == '\n' || c == '\r') { pos++; continue; }  /* empty lines */
@@ -280,11 +327,25 @@ static uint32_t rd_page(const struct reader *r, uint32_t pos, int draw)
         uint32_t h = rd_line_height(r, heading);
         if (heading && para_start && y > top)
             y += r->line_h / 2;                           /* air above a heading */
+        else if (heading && para_start)
+            y += r->sink;                                 /* a heading that opens the page starts lower */
         if (y + h > bottom) break;
         pos = rd_line(r, pos, y, draw);
         y += h;
         if (heading && pos < r->len && r->text[pos] == '\n')
             y += r->line_h / 4;                           /* and a little below it */
+        if (heading && r->head_gap && (pos >= r->len || r->text[pos - 1] == '\n')) {   /* the heading paragraph ended */
+            uint32_t q = pos;
+            int h2 = 0, n2, i2;
+            while (q < r->len && (r->text[q] == '\n' || r->text[q] == '\r')) q++;
+            if (q < r->len) rd_style_at(r, q, &h2, &n2, &i2);
+            if (!h2) {                                    /* and the text itself comes next */
+                uint32_t w = rd_page_w(r) - 2 * r->margin_x;
+                if (draw && r->head_rule == 1) rd_rect(r, r->margin_x + w / 2 - 60, y + r->head_gap / 3, 120, 3, 15);
+                if (draw && r->head_rule == 2) rd_rect(r, r->margin_x, y + r->head_gap / 3, w, 3, 15);
+                y += r->head_gap;
+            }
+        }
     }
     while (pos < r->len && (r->text[pos] == '\n' || r->text[pos] == '\r'))
         pos++;
@@ -303,6 +364,19 @@ static void rd_footer(const struct reader *r, uint32_t page_no, uint32_t pos)
 {
     char b[16], s[32];
     uint32_t y = rd_page_h(r) - r->margin_bottom - r->small->ascent - r->small->descent, n = 0;
+    uint32_t w = rd_page_w(r) - 2 * r->margin_x;
+    if (r->footer == 1) {                                 /* page number in the middle, nothing else */
+        const char *t = rd_utoa(page_no, b + sizeof b);
+        rd_draw_ascii(r, r->small, r->margin_x + (w - rd_width_ascii(r->small, t)) / 2, y, t);
+        return;
+    }
+    if (r->footer == 2) {                                 /* no numbers: a thin line that fills up */
+        uint32_t ly = rd_page_h(r) - r->margin_bottom - 6;
+        uint32_t done = pos >= r->len ? w : (pos / 64u) * w / (r->len / 64u + 1u);
+        rd_rect(r, r->margin_x, ly + 2, w, 2, 5);
+        rd_rect(r, r->margin_x, ly, done, 6, 15);
+        return;
+    }
     rd_draw_ascii(r, r->small, r->margin_x, y, rd_utoa(page_no, b + sizeof b));
     uint32_t pct = pos >= r->len ? 100u : (pos / 64u * 100u) / (r->len / 64u + 1u);   /* 32-bit maths only */
     for (const char *t = rd_utoa(pct, b + sizeof b); *t; t++) s[n++] = *t;
@@ -319,4 +393,48 @@ static void rd_defaults(struct reader *r)
     r->margin_x = 51; r->margin_top = 27; r->margin_bottom = 27;
     r->line_h = 69; r->indent = 46; r->justify = 0;
     r->footer_h = 60;
+    r->note = &font_note; r->header_h = 0; r->sink = 0; r->head_gap = 0;
+    r->header = 0; r->footer = 0; r->head_left = 0; r->head_rule = 0; r->flush_first = 0; r->list = 0; r->invert = 0;
+}
+
+/* Running header: small italic line above the text. `chapter` may be "". */
+static void rd_header(const struct reader *r, const char *book, const char *chapter)
+{
+    uint32_t w = rd_page_w(r) - 2 * r->margin_x, y = r->margin_top;
+    if (!r->header_h)
+        return;
+    if (r->header == 1) {
+        const char *s = chapter[0] ? chapter : book;
+        rd_draw(r, r->note, r->margin_x + (w - rd_drawn_width(r->note, s, w)) / 2, y, s, w);
+        return;
+    }
+    uint32_t half = w / 2 - 30;
+    rd_draw(r, r->note, r->margin_x, y, book, chapter[0] ? half : w);
+    if (chapter[0])
+        rd_draw(r, r->note, r->margin_x + w - rd_drawn_width(r->note, chapter, half), y, chapter, half);
+}
+
+/* Other page looks, offered to Diogo on 21 Nov 2026. 0 = the plain look above.
+ *   1 "Kobalt plus": same text block; book + chapter above the text; chapter headings at the left with a line.
+ *   2 "Classic":     wider margins, both edges straight, centred header and page number, chapters start lower.
+ *   3 "Bare":        text only; a thin line at the bottom shows how far you are. */
+static void rd_set_look(struct reader *r, uint32_t look)
+{
+    rd_defaults(r);
+    if (look == 1) {
+        r->header = 2; r->header_h = 69;
+        r->head_left = 1; r->head_rule = 2; r->head_gap = 46; r->sink = 35; r->flush_first = 1;
+        r->list = 1;
+    } else if (look == 2) {
+        r->margin_x = 112; r->margin_top = 72; r->margin_bottom = 60;
+        r->header = 1; r->header_h = 92; r->footer = 1; r->footer_h = 84;
+        r->justify = 1;
+        r->head = &font_title; r->sink = 276; r->head_rule = 1; r->head_gap = 92; r->flush_first = 1;
+        r->list = 2;
+    } else if (look == 3) {
+        r->margin_x = 84; r->margin_top = 66; r->margin_bottom = 40;
+        r->footer = 2; r->footer_h = 40;
+        r->head = &font_title; r->head_left = 1; r->sink = 207; r->head_gap = 58; r->flush_first = 1;
+        r->list = 3;
+    }
 }

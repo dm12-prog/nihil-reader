@@ -8,4 +8,6 @@ F=assets/fonts/KF_Libron-Regular.ttf
   python3 tools/font/gen_font.py assets/fonts/KF_Libron-Italic.ttf 46 font_ital 0.8
   python3 tools/font/gen_font.py assets/fonts/KF_Libron-Bold.ttf 58 font_head 0.9
   python3 tools/font/gen_font.py $F 30 font_small 0.8
+  python3 tools/font/gen_font.py assets/fonts/KF_Libron-Italic.ttf 30 font_note 0.8
+  python3 tools/font/gen_font.py $F 66 font_title 0.85
 } > core/font_data.h
