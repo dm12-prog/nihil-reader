@@ -12,6 +12,13 @@ D=/mnt/onboard/.adds/macdisplay
 FB=/mnt/onboard/.adds/koreader/fbink
 msg() { [ -x "$FB" ] && "$FB" -q -m -y -6 "$*" >/dev/null 2>&1; echo "msg: $*"; }
 
+resume_nickel() {
+  if [ -f /tmp/macdisplay-nickel-paused ]; then
+    killall -CONT nickel 2>/dev/null && echo "nickel resumed"
+    rm -f /tmp/macdisplay-nickel-paused
+  fi
+}
+
 stop_all() {
   for f in /tmp/macdisplay-vnc.pid /tmp/macdisplay-watch.pid; do
     [ -s "$f" ] && kill "$(cat "$f")" 2>/dev/null
@@ -21,6 +28,7 @@ stop_all() {
 
 if [ "$1" = stop ]; then
   stop_all
+  resume_nickel
   exit 0
 fi
 
@@ -70,6 +78,11 @@ echo "PRODUCT=$PRODUCT MODEL_NUMBER=$MODEL_NUMBER"
 msg "Mac display: connecting to $HOST:$PORT ... Stop: hold a finger in a corner 2 s"
 RUST_LOG=info "$D/einkvnc" "$@" > "$D/einkvnc.log" 2>&1 &
 echo $! > /tmp/macdisplay-vnc.pid
+# pause the Kobo's own software so its screen updates (clock, battery, Wi-Fi
+# icons) don't draw over the Mac picture; resumed when the display stops.
+# Its touch input is held by kobo-hid, so no taps pile up meanwhile.
+sleep 3
+killall -STOP nickel 2>/dev/null && echo "nickel paused" && touch /tmp/macdisplay-nickel-paused
 if ! { [ -s /tmp/macdisplay-watch.pid ] && kill -0 "$(cat /tmp/macdisplay-watch.pid)" 2>/dev/null; }; then
   "$D/kobo-hid" "$D/watch.log" watch &
   echo $! > /tmp/macdisplay-watch.pid
@@ -82,6 +95,7 @@ while kill -0 "$(cat /tmp/macdisplay-vnc.pid 2>/dev/null)" 2>/dev/null &&
 done
 kill -0 "$(cat /tmp/macdisplay-vnc.pid 2>/dev/null)" 2>/dev/null || echo "viewer ended first"
 stop_all
+resume_nickel
 tail -n 20 "$D/einkvnc.log"
 # repaint the Kobo's own screen (einkvnc drew from its own buffer)
 [ -x "$FB" ] && "$FB" -q -s -f >/dev/null 2>&1
