@@ -291,6 +291,7 @@ int main(int argc, char **argv)
     int fwd_down = 0, back_down = 0, combo = 0;
     long combo_t = 0;
     long n_moves = 0;
+    long corner_t = 0;
     char *logpath = argc > 1 ? argv[1] : "/tmp/kobo-hid.log";
 
     logf = fopen(logpath, "a");
@@ -383,6 +384,21 @@ int main(int argc, char **argv)
                 } else if (e->type == EV_SYN && e->code == SYN_REPORT && i == touch_idx) {
                     int x, y, contact, down, buttons;
                     contact = tid >= 0;
+                    /* stop gesture that needs no buttons (on 22 Nov 2026 the
+                       page and power buttons were held by another program):
+                       keep a FINGER in any corner of the screen for 2 s */
+                    {
+                        int wx = (ax.maximum - ax.minimum) / 10, wy = (ay.maximum - ay.minimum) / 10;
+                        int in_corner = contact && tool != MT_TOOL_PEN &&
+                            (rx <= ax.minimum + wx || rx >= ax.maximum - wx) &&
+                            (ry <= ay.minimum + wy || ry >= ay.maximum - wy);
+                        if (!in_corner) corner_t = 0;
+                        else if (!corner_t) corner_t = now_ms();
+                        else if (now_ms() - corner_t >= 2000) {
+                            logm("finger held in a corner: stopping");
+                            stop_flag = 1;
+                        }
+                    }
                     if (contact && has_tooltype && tool != MT_TOOL_PEN && !finger_ok) contact = 0;
                     if (!contact) {
                         if (last_btn > 0) send_ptr(0, last_x < 0 ? 0 : last_x, last_y < 0 ? 0 : last_y, 1);

@@ -6,7 +6,8 @@
 # Settings: display.cfg next to this script (HOST = the Mac's address).
 # While it runs, the page buttons and touch screen are held away from the
 # Kobo's own software (kobo-hid watch). Stop: power button, or hold both page
-# buttons 1.5 s. "mac-display.sh stop" also stops it.
+# buttons 1.5 s, or hold a finger (not the pen) in any screen corner for 2 s.
+# "mac-display.sh stop" also stops it.
 D=/mnt/onboard/.adds/macdisplay
 FB=/mnt/onboard/.adds/koreader/fbink
 msg() { [ -x "$FB" ] && "$FB" -q -m -y -6 "$*" >/dev/null 2>&1; echo "msg: $*"; }
@@ -66,7 +67,7 @@ PRODUCT=$(/bin/kobo_config.sh 2>/dev/null); export PRODUCT
 MODEL_NUMBER=$(cut -f 6 -d ',' /mnt/onboard/.kobo/version | sed -e 's/^[0-]*//'); export MODEL_NUMBER
 echo "PRODUCT=$PRODUCT MODEL_NUMBER=$MODEL_NUMBER"
 
-msg "Mac display: connecting to $HOST:$PORT ..."
+msg "Mac display: connecting to $HOST:$PORT ... Stop: hold a finger in a corner 2 s"
 RUST_LOG=info "$D/einkvnc" "$@" > "$D/einkvnc.log" 2>&1 &
 echo $! > /tmp/macdisplay-vnc.pid
 if ! { [ -s /tmp/macdisplay-watch.pid ] && kill -0 "$(cat /tmp/macdisplay-watch.pid)" 2>/dev/null; }; then
