@@ -1,11 +1,11 @@
-# kobo-hid: Kobo Sage as a USB keyboard + pen tablet.
+# kobo-hid: Kobo Sage as a USB pen tablet + trackpad.
 #   make         -> kobo-hid (static ARM program)
 #   make module KDIR=<Kobo linux-4.9 tree, config = Kobo's live config plus
 #               CONFIG_USB_G_HID=m, after "make modules_prepare">
 #               SYMVERS=<device.symvers>
 #                -> usb_f_hid.ko (the kernel's own f_hid.c, built out of tree,
-#                   patched to use one IN endpoint: the Sage UDC has a single
-#                   interrupt endpoint, ep4)
+#                   patched: one IN endpoint (the Sage UDC has a single
+#                   interrupt endpoint, ep4) + upstream write-deadlock fix)
 CC = arm-linux-gnueabihf-gcc
 
 all: kobo-hid

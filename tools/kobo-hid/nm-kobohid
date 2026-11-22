@@ -1,2 +1,3 @@
 menu_item:main:Mac tablet - start:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/kobohid/kobo-hid.sh
+menu_item:main:Mac tablet - pen direction:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/kobohid/kobo-hid.sh calib
 menu_item:main:Mac tablet - stop:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/kobohid/kobo-hid.sh stop

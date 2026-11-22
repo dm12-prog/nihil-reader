@@ -1,16 +1,20 @@
 #!/bin/sh
-# Mac tablet mode: the Kobo becomes a USB keyboard + pen tablet for the
-# computer it is plugged into.
-#   page buttons -> Left / Right arrow keys
-#   stylus       -> moves the computer's pointer, pen down = click
-#   both page buttons, short press -> next pen orientation (saved)
-#   both page buttons, hold 1.5 s, or the power button -> stop
+# Mac tablet mode: the Kobo becomes a USB pen tablet + trackpad for the
+# computer it is plugged into (the computer sees a standard USB mouse).
+#   pen           -> pointer goes where the pen is, pen touching = click
+#   one finger    -> trackpad; tap = click; two-finger tap = right click;
+#                    two fingers moving = scroll
+#   finger held in a screen corner 2 s, or the power button -> stop
+# The first start asks for two pen taps (top-left, top-right corner) to learn
+# which way the Kobo is held; "kobo-hid.sh calib" asks again.
 #
 # How: loads usb_f_hid.ko (built by us for the Kobo's own kernel; nothing in
 # the Kobo's system is changed), sets up a USB HID gadget through configfs,
 # then runs kobo-hid. Everything is gone after "stop" or a restart.
 #
 # "kobo-hid.sh stop" tears it down (used by the menu entry and on exit).
+# Nickel (the Kobo's own software) is paused while the tablet runs, so it
+# cannot go to sleep or draw over the screen, and resumed afterwards.
 D=/mnt/onboard/.adds/kobohid
 G=/sys/kernel/config/usb_gadget/kobohid
 FB=/mnt/onboard/.adds/koreader/fbink
@@ -33,12 +37,26 @@ teardown() {
     rmdir "$G" 2>/dev/null && echo "gadget removed"
   fi
   lsmod | grep -q "^usb_f_hid " && { rmmod usb_f_hid; echo "rmmod usb_f_hid -> $?"; }
+  if [ -f /tmp/kobohid-nickel-paused ]; then
+    killall -CONT nickel 2>/dev/null && echo "nickel resumed"
+    rm -f /tmp/kobohid-nickel-paused
+  fi
 }
 
 if [ "$1" = stop ]; then
   exec >> /tmp/kobohid-stop.log 2>&1
   date
   teardown
+  exit 0
+fi
+
+if [ "$1" = calib ]; then
+  exec > "$D/calib.log" 2>&1
+  date
+  [ -s /tmp/kobohid.pid ] && kill -0 "$(cat /tmp/kobohid.pid)" 2>/dev/null && { echo "tablet running: stop it first"; exit 1; }
+  "$D/kobo-hid" "$D/kobo-hid.log" calib
+  echo "calib exit -> $?"
+  sync
   exit 0
 fi
 
@@ -70,23 +88,24 @@ mkdir -p "$G" || { echo "mkdir gadget failed"; teardown; exit 1; }
 cd "$G" || exit 1
 echo 0x1d6b > idVendor     # Linux Foundation
 echo 0x0104 > idProduct    # Multifunction Composite Gadget
-echo 0x0100 > bcdDevice
+echo 0x0200 > bcdDevice    # 2.00 = tablet + trackpad (1.00 was keyboard + tablet)
 echo 0x0200 > bcdUSB
 mkdir -p strings/0x409
 echo "Kobo" > strings/0x409/manufacturer
 echo "Kobo Sage Tablet" > strings/0x409/product
-echo "KOBOHID0001" > strings/0x409/serialnumber
+echo "KOBOHID0002" > strings/0x409/serialnumber
 
-# one HID function, two reports: ID 1 keyboard, ID 2 absolute pointer
+# one HID function, two reports: ID 1 pen (absolute pointer), ID 2 trackpad
+# (relative mouse + scroll). No keyboard: the Mac asked to set one up last time.
 # (two separate functions need 4 endpoints and failed to bind on 22 Nov 2026)
 mkdir -p functions/hid.usb0
 echo 0 > functions/hid.usb0/protocol
 echo 0 > functions/hid.usb0/subclass
-echo 9 > functions/hid.usb0/report_length
-cat "$D/combo.desc" > functions/hid.usb0/report_desc
+echo 6 > functions/hid.usb0/report_length
+cat "$D/pad.desc" > functions/hid.usb0/report_desc
 
 mkdir -p configs/c.1/strings/0x409
-echo "keyboard + tablet" > configs/c.1/strings/0x409/configuration
+echo "pen tablet + trackpad" > configs/c.1/strings/0x409/configuration
 echo 100 > configs/c.1/MaxPower
 ln -s functions/hid.usb0 configs/c.1/
 echo "$UDC" > UDC; echo "bind -> $?"
@@ -103,8 +122,7 @@ for n in 0; do
 done
 ls -l /dev/hidg* 2>&1
 
-[ -f "$D/config" ] || printf 'ORIENT=1\nFINGER=0\nKEY_NEXT=0x4f\nKEY_PREV=0x50\n' > "$D/config"
-msg "Mac tablet ON. Both buttons: rotate pen. Hold both or power: stop"
+killall -STOP nickel 2>/dev/null && { echo "nickel paused"; touch /tmp/kobohid-nickel-paused; }
 sync
 # crash hunting (22 Nov 2026: the Kobo froze after the Mac saw the keyboard):
 # keep the last kernel messages on storage, synced every second
