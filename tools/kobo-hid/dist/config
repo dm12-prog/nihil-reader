@@ -1,6 +1,6 @@
 # kobo-hid settings
 # ORIENT/ORIENT_SET: pen direction, set by "Mac tablet - pen direction"
-ORIENT=3
+ORIENT=0
 ORIENT_SET=1
 # SCREEN: shape of the computer screen (16:10 most Macs, 16:9 most monitors, 0 = whole Kobo)
 SCREEN=16:10

@@ -149,7 +149,11 @@ static void hid_write(const unsigned char *buf, int n, int must)
     for (;;) {
         ssize_t r = write(hid_fd, buf, n);
         if (r == n) { n_reports++; return; }
-        if (r < 0 && errno != EAGAIN && errno != EINTR) { hid_errors++; return; }
+        if (r < 0 && errno != EAGAIN && errno != EINTR) {
+            if (hid_errors < 10) logm("hid write error: %s", strerror(errno));
+            hid_errors++;
+            return;
+        }
         if (!must || now_ms() - t0 > 200) { hid_errors++; return; }
         usleep(1000);
     }
@@ -602,8 +606,24 @@ int main(int argc, char **argv)
     }
     screen_msg("Mac tablet ON. Pen = pointer, pen touching = click. One finger = trackpad, tap = click, two-finger tap = right click, two fingers = scroll. Stop: hold a finger in a corner 2 s.");
 
-    while (!stop_flag)
-        if (pump(1000, pad_frame) < 0) break;
+    {
+        long beat = now_ms(), last_reports = -1;
+        while (!stop_flag) {
+            if (pump(1000, pad_frame) < 0) break;
+            /* crash hunting (22 Nov 15:13 the Kobo died ~75 s into a run
+               without a kernel message): a synced line every 5 s while
+               reports flow shows how far it got */
+            if (now_ms() - beat >= (n_reports != last_reports ? 5000 : 30000)) {
+                char st[32] = "?";
+                FILE *f = fopen("/sys/class/udc/5100000.udc-controller/state", "r");
+                if (f) { if (fscanf(f, "%31s", st) != 1) strcpy(st, "?"); fclose(f); }
+                beat = now_ms();
+                logm("alive: usb %s, %ld reports sent, %ld dropped/failed, pen hover/touch frames %ld/%ld",
+                     st, n_reports, hid_errors, hover_frames, down_frames);
+                last_reports = n_reports;
+            }
+        }
+    }
 
     if (abs_btn) send_abs(0, abs_x, abs_y);
     if (rel_btn) send_rel(0, 0, 0, 0, 0);

@@ -25,7 +25,19 @@
  	NULL,
  };
  
-@@ -313,7 +311,7 @@
+@@ -308,12 +306,19 @@
+ 		spin_lock_irqsave(&hidg->write_spinlock, flags);
+ 	}
+ 
++	/* kobo: function disabled by the host (cable out, USB reset):
++	   no request to use, so do not touch it (was a NULL dereference) */
++	if (!hidg->req) {
++		spin_unlock_irqrestore(&hidg->write_spinlock, flags);
++		return -ESHUTDOWN;
++	}
++
+ 	hidg->write_pending = 1;
+ 	req = hidg->req;
  	count  = min_t(unsigned, count, hidg->report_length);
  
  	spin_unlock_irqrestore(&hidg->write_spinlock, flags);
@@ -34,7 +46,7 @@
  
  	if (status != 0) {
  		ERROR(hidg->func.config->cdev,
-@@ -326,7 +324,8 @@
+@@ -326,7 +331,8 @@
  
  	/* we our function has been disabled by host */
  	if (!hidg->req) {
@@ -44,7 +56,7 @@
  		/*
  		 * TODO
  		 * Should we fail with error here?
-@@ -340,15 +339,22 @@
+@@ -340,15 +346,22 @@
  	req->complete = f_hidg_req_complete;
  	req->context  = hidg;
  
@@ -70,7 +82,7 @@
  
  	return status;
  release_write_pending:
-@@ -548,7 +554,8 @@
+@@ -548,7 +561,8 @@
  	unsigned long flags;
  
  	usb_ep_disable(hidg->in_ep);
@@ -80,7 +92,7 @@
  
  	spin_lock_irqsave(&hidg->read_spinlock, flags);
  	list_for_each_entry_safe(list, next, &hidg->completed_out_req, list) {
-@@ -706,10 +713,8 @@
+@@ -706,10 +720,8 @@
  		goto fail;
  	hidg->in_ep = ep;
  

@@ -306,6 +306,13 @@ try_again:
 		spin_lock_irqsave(&hidg->write_spinlock, flags);
 	}
 
+	/* kobo: function disabled by the host (cable out, USB reset):
+	   no request to use, so do not touch it (was a NULL dereference) */
+	if (!hidg->req) {
+		spin_unlock_irqrestore(&hidg->write_spinlock, flags);
+		return -ESHUTDOWN;
+	}
+
 	hidg->write_pending = 1;
 	req = hidg->req;
 	count  = min_t(unsigned, count, hidg->report_length);

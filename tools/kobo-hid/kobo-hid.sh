@@ -126,7 +126,7 @@ killall -STOP nickel 2>/dev/null && { echo "nickel paused"; touch /tmp/kobohid-n
 sync
 # crash hunting (22 Nov 2026: the Kobo froze after the Mac saw the keyboard):
 # keep the last kernel messages on storage, synced every second
-( while :; do dmesg | tail -n 80 > "$D/dmesg-live.log"; sync; sleep 1; done ) &
+( while :; do dmesg | tail -n 200 > "$D/dmesg-live.log"; sync; sleep 1; done ) &
 DMESG_PID=$!
 "$D/kobo-hid" "$D/kobo-hid.log" &
 echo $! > /tmp/kobohid.pid
