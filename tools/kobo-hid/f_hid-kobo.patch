@@ -1,0 +1,50 @@
+--- /tmp/f_hid.orig.c	2026-11-22 13:57:48.580588466 +0000
++++ build-mod/f_hid.c	2026-11-22 13:57:48.597249304 +0000
+@@ -81,7 +81,7 @@
+ 	.bDescriptorType	= USB_DT_INTERFACE,
+ 	/* .bInterfaceNumber	= DYNAMIC */
+ 	.bAlternateSetting	= 0,
+-	.bNumEndpoints		= 2,
++	.bNumEndpoints		= 1, /* kobo: IN only, the Sage UDC has one interrupt endpoint */
+ 	.bInterfaceClass	= USB_CLASS_HID,
+ 	/* .bInterfaceSubClass	= DYNAMIC */
+ 	/* .bInterfaceProtocol	= DYNAMIC */
+@@ -128,7 +128,6 @@
+ 	(struct usb_descriptor_header *)&hidg_interface_desc,
+ 	(struct usb_descriptor_header *)&hidg_desc,
+ 	(struct usb_descriptor_header *)&hidg_hs_in_ep_desc,
+-	(struct usb_descriptor_header *)&hidg_hs_out_ep_desc,
+ 	NULL,
+ };
+ 
+@@ -162,7 +161,6 @@
+ 	(struct usb_descriptor_header *)&hidg_interface_desc,
+ 	(struct usb_descriptor_header *)&hidg_desc,
+ 	(struct usb_descriptor_header *)&hidg_fs_in_ep_desc,
+-	(struct usb_descriptor_header *)&hidg_fs_out_ep_desc,
+ 	NULL,
+ };
+ 
+@@ -548,7 +546,8 @@
+ 	unsigned long flags;
+ 
+ 	usb_ep_disable(hidg->in_ep);
+-	usb_ep_disable(hidg->out_ep);
++	if (hidg->out_ep)
++		usb_ep_disable(hidg->out_ep);
+ 
+ 	spin_lock_irqsave(&hidg->read_spinlock, flags);
+ 	list_for_each_entry_safe(list, next, &hidg->completed_out_req, list) {
+@@ -706,10 +705,8 @@
+ 		goto fail;
+ 	hidg->in_ep = ep;
+ 
+-	ep = usb_ep_autoconfig(c->cdev->gadget, &hidg_fs_out_ep_desc);
+-	if (!ep)
+-		goto fail;
+-	hidg->out_ep = ep;
++	/* kobo: no OUT endpoint (output reports would come via SET_REPORT) */
++	hidg->out_ep = NULL;
+ 
+ 	/* set descriptor dynamic values */
+ 	hidg_interface_desc.bInterfaceSubClass = hidg->bInterfaceSubClass;

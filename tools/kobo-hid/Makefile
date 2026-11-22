@@ -3,7 +3,9 @@
 #   make module KDIR=<Kobo linux-4.9 tree, config = Kobo's live config plus
 #               CONFIG_USB_G_HID=m, after "make modules_prepare">
 #               SYMVERS=<device.symvers>
-#                -> usb_f_hid.ko (the kernel's own f_hid.c, built out of tree)
+#                -> usb_f_hid.ko (the kernel's own f_hid.c, built out of tree,
+#                   patched to use one IN endpoint: the Sage UDC has a single
+#                   interrupt endpoint, ep4)
 CC = arm-linux-gnueabihf-gcc
 
 all: kobo-hid
@@ -15,6 +17,7 @@ kobo-hid: kobo-hid.c
 module:
 	mkdir -p build-mod
 	cp $(KDIR)/drivers/usb/gadget/function/f_hid.c build-mod/
+	patch build-mod/f_hid.c f_hid-kobo.patch
 	printf 'obj-m := usb_f_hid.o\nusb_f_hid-y := f_hid.o\nccflags-y := -I$$(KDIR)/drivers/usb/gadget -I$$(KDIR)/drivers/usb/gadget/function\n' > build-mod/Kbuild
 	$(MAKE) -C $(KDIR) M=$(CURDIR)/build-mod KDIR=$(KDIR) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- HOSTCFLAGS=-fcommon KCFLAGS=-Wno-error KBUILD_EXTRA_SYMBOLS=$(SYMVERS) modules
 	arm-linux-gnueabihf-strip --strip-debug build-mod/usb_f_hid.ko
