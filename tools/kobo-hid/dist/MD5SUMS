@@ -1,6 +1,6 @@
 ef535647ccdbd5df15717b45f54ccd78 kobo-hid
 2a82781cf028961a3564e5fb464c2736 usb_f_hid.ko
 732c4dba690df064f965ceb3403f1923 pad.desc
-4c9997b8cfe8698594fcd01b2b64631f kobo-hid.sh
+ccdb8f2a66eac887c0b6b1f037ee9a66 kobo-hid.sh
 babb242c7db56906177377308bc7f9a1 nm-kobohid
 c84902c3f98715b972ea8e8da51c4ce0 config

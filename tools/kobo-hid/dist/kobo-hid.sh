@@ -13,8 +13,8 @@
 # then runs kobo-hid. Everything is gone after "stop" or a restart.
 #
 # "kobo-hid.sh stop" tears it down (used by the menu entry and on exit).
-# Nickel (the Kobo's own software) is paused while the tablet runs, so it
-# cannot go to sleep or draw over the screen, and resumed afterwards.
+# Nickel (the Kobo's own software) keeps running but does not get the touch
+# screen while the tablet runs (pausing it made the Kobo reboot, see below).
 D=/mnt/onboard/.adds/kobohid
 G=/sys/kernel/config/usb_gadget/kobohid
 FB=/mnt/onboard/.adds/koreader/fbink
@@ -122,7 +122,10 @@ for n in 0; do
 done
 ls -l /dev/hidg* 2>&1
 
-killall -STOP nickel 2>/dev/null && { echo "nickel paused"; touch /tmp/kobohid-nickel-paused; }
+# Nickel is NOT paused any more: on 22 Nov three runs died ~76 s after Nickel
+# was stopped. Kobo's "sickel" reboots the reader when Nickel stops answering
+# (blog.the-ebook-reader.com 2015-08-15, MobileRead "Direct Links to Kobo
+# Firmware" p.96). Nickel keeps running; it just does not get the touch screen.
 sync
 # crash hunting (22 Nov 2026: the Kobo froze after the Mac saw the keyboard):
 # keep the last kernel messages on storage, synced every second
