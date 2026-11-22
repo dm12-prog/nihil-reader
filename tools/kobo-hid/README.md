@@ -35,9 +35,9 @@ config and `device.symvers`, with `f_hid-kobo.patch`:
 
 `kobo-hid.sh` loads the module, builds the gadget through configfs (one HID function,
 `pad.desc`: report 1 = absolute pointer for the pen, report 2 = relative mouse + wheel +
-horizontal pan for the trackpad), keeps Nickel running (pausing it triggers the "sickel" reboot), then runs `kobo-hid`, which takes the touch
+horizontal pan for the trackpad), ends Kobo's watchdog "sickel" (as KOReader does; it is back after the next restart) and pauses Nickel (otherwise its idle sleep hangs while the gadget is up and sickel restarts the Kobo), then runs `kobo-hid`, which takes the touch
 screen (EVIOCGRAB) and turns it into HID reports on `/dev/hidg0`. Everything is in RAM:
-stopping or a restart removes it.
+stopping or a restart removes it and resumes Nickel.
 
 ## Files on the Kobo
 `.adds/kobohid/`: `kobo-hid`, `usb_f_hid.ko`, `pad.desc`, `kobo-hid.sh`
