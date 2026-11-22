@@ -8,3 +8,7 @@ SCREEN=16:10
 SPEED=150
 FINGER=1
 SCROLL=1
+# ZOOM: pinch sends 1 = Cmd+/Cmd-, 2 = Cmd+scroll, 0 = off; GRID: dot spacing in mm (0 = none); BUTTONS=0: page buttons off
+ZOOM=1
+GRID=5
+BUTTONS=1

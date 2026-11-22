@@ -88,20 +88,21 @@ mkdir -p "$G" || { echo "mkdir gadget failed"; teardown; exit 1; }
 cd "$G" || exit 1
 echo 0x1d6b > idVendor     # Linux Foundation
 echo 0x0104 > idProduct    # Multifunction Composite Gadget
-echo 0x0200 > bcdDevice    # 2.00 = tablet + trackpad (1.00 was keyboard + tablet)
+echo 0x0300 > bcdDevice    # 3.00 = tablet + trackpad + shortcut keys
 echo 0x0200 > bcdUSB
 mkdir -p strings/0x409
 echo "Kobo" > strings/0x409/manufacturer
 echo "Kobo Sage Tablet" > strings/0x409/product
-echo "KOBOHID0002" > strings/0x409/serialnumber
+echo "KOBOHID0003" > strings/0x409/serialnumber
 
-# one HID function, two reports: ID 1 pen (absolute pointer), ID 2 trackpad
-# (relative mouse + scroll). No keyboard: the Mac asked to set one up last time.
+# one HID function, three reports: ID 1 pen (absolute pointer), ID 2 trackpad,
+# ID 3 keyboard (zoom + app switching shortcuts; the Mac may ask once to identify it)
+# (ID 2 = relative mouse + scroll)
 # (two separate functions need 4 endpoints and failed to bind on 22 Nov 2026)
 mkdir -p functions/hid.usb0
 echo 0 > functions/hid.usb0/protocol
 echo 0 > functions/hid.usb0/subclass
-echo 6 > functions/hid.usb0/report_length
+echo 9 > functions/hid.usb0/report_length
 cat "$D/pad.desc" > functions/hid.usb0/report_desc
 
 mkdir -p configs/c.1/strings/0x409

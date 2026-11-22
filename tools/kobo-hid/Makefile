@@ -11,7 +11,7 @@ CC = arm-linux-gnueabihf-gcc
 all: kobo-hid
 
 kobo-hid: kobo-hid.c
-	$(CC) -O2 -static -Wall -o $@ $<
+	$(CC) -O2 -static -Wall -o $@ $< -lm
 	arm-linux-gnueabihf-strip $@
 
 module:

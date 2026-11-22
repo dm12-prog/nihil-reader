@@ -7,9 +7,15 @@ USB mouse. Nothing is installed on the computer.
   tablet). Pen touching = left button held (click, drag, draw). Pen side
   button = right button.
 - **One finger**: trackpad (moves the pointer). Tap = click.
-- **Two fingers**: tap = right click, move = scroll.
-- **Stop**: hold a finger in any screen corner for 2 s (or the power button,
-  if no other program holds it).
+  Tap, then touch again and hold or move = drag (button held until you lift).
+  Two quick taps = double click.
+- **Two fingers**: tap = right click, move = scroll, spread / pinch = zoom
+  in / out (Cmd + / Cmd -).
+- **Page buttons**: lower = next app (Cmd+Tab), upper = previous app; press
+  again within 0.9 s to move further in the app switcher.
+- **Screen**: a dot grid (every 5 mm) to judge distances.
+- **Stop**: hold a finger in any screen corner for 2 s, or hold both page
+  buttons for 1.5 s.
 - First start: two pen taps (top-left, then top-right corner, as you hold the
   Kobo) tell it which way the Kobo is held. Menu entry
   "Mac tablet - pen direction" asks again.
@@ -17,7 +23,9 @@ USB mouse. Nothing is installed on the computer.
 Settings in `.adds/kobohid/config`: `SCREEN=16:10` (shape of the computer
 screen; the pen area is the biggest rectangle of that shape in the middle of
 the Kobo; `0` = whole Kobo), `SPEED=150` (trackpad, percent), `FINGER=0`
-(pen only), `SCROLL=-1` (flip scrolling).
+(pen only), `SCROLL=-1` (flip scrolling), `ZOOM=2` (pinch sends Cmd + scroll
+instead of Cmd +/-; `0` = off), `GRID=5` (dot spacing in mm, `0` = no grid), `BUTTONS=0`
+(page buttons off). The Mac may ask once to identify a keyboard (the shortcut keys): close it.
 
 Not there yet: pen pressure (the computer gets a mouse, which has no pressure).
 
@@ -35,7 +43,7 @@ config and `device.symvers`, with `f_hid-kobo.patch`:
 
 `kobo-hid.sh` loads the module, builds the gadget through configfs (one HID function,
 `pad.desc`: report 1 = absolute pointer for the pen, report 2 = relative mouse + wheel +
-horizontal pan for the trackpad), ends Kobo's watchdog "sickel" (as KOReader does; it is back after the next restart) and pauses Nickel (otherwise its idle sleep hangs while the gadget is up and sickel restarts the Kobo), then runs `kobo-hid`, which takes the touch
+horizontal pan for the trackpad, report 3 = keyboard for the shortcuts), ends Kobo's watchdog "sickel" (as KOReader does; it is back after the next restart) and pauses Nickel (otherwise its idle sleep hangs while the gadget is up and sickel restarts the Kobo), then runs `kobo-hid`, which takes the touch
 screen (EVIOCGRAB) and turns it into HID reports on `/dev/hidg0`. Everything is in RAM:
 stopping or a restart removes it and resumes Nickel.
 
