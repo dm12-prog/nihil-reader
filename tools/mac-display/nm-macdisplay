@@ -1,0 +1,2 @@
+menu_item:main:Mac display - start:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/macdisplay/mac-display.sh
+menu_item:main:Mac display - stop:cmd_spawn:quiet:exec /bin/sh /mnt/onboard/.adds/macdisplay/mac-display.sh stop

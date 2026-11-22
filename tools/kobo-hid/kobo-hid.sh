@@ -106,10 +106,15 @@ ls -l /dev/hidg* 2>&1
 [ -f "$D/config" ] || printf 'ORIENT=1\nFINGER=0\nKEY_NEXT=0x4f\nKEY_PREV=0x50\n' > "$D/config"
 msg "Mac tablet ON. Both buttons: rotate pen. Hold both or power: stop"
 sync
+# crash hunting (22 Nov 2026: the Kobo froze after the Mac saw the keyboard):
+# keep the last kernel messages on storage, synced every second
+( while :; do dmesg | tail -n 80 > "$D/dmesg-live.log"; sync; sleep 1; done ) &
+DMESG_PID=$!
 "$D/kobo-hid" "$D/kobo-hid.log" &
 echo $! > /tmp/kobohid.pid
 wait $!
 echo "kobo-hid exit -> $?"
+kill $DMESG_PID 2>/dev/null
 rm -f /tmp/kobohid.pid
 teardown
 msg "Mac tablet OFF"

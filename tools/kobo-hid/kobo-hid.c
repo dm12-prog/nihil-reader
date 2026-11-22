@@ -71,6 +71,7 @@ static void logm(const char *fmt, ...)
     va_end(ap);
     fputc('\n', logf);
     fflush(logf);
+    fsync(fileno(logf)); /* the 22 Nov crash lost every unsynced line */
 }
 
 static long now_ms(void)
@@ -118,10 +119,13 @@ static void save_cfg(void)
 
 /* ---- HID output ---- */
 static int hid_fd = -1;
+static int watch_only; /* "kobo-hid <log> watch": only hold the buttons and touch
+                          screen away from the Kobo's software until stop */
 static long hid_errors;
 
 static void hid_write(int fd, const unsigned char *buf, int n, int must)
 {
+    if (watch_only) return;
     /* f_hid accepts one report at a time; with O_NONBLOCK it answers EAGAIN
        while the previous report is still waiting for the computer. Pointer
        moves can be dropped; key presses and button changes are retried. */
@@ -241,8 +245,10 @@ int main(int argc, char **argv)
     load_cfg();
     logm("config: ORIENT=%d FINGER=%d KEY_NEXT=0x%02x KEY_PREV=0x%02x", orient, finger_ok, key_next, key_prev);
 
-    hid_fd = open("/dev/hidg0", O_RDWR | O_NONBLOCK);
-    if (hid_fd < 0) {
+    watch_only = argc > 2 && !strcmp(argv[2], "watch");
+    if (watch_only) logm("watch mode: no USB output");
+    else hid_fd = open("/dev/hidg0", O_RDWR | O_NONBLOCK);
+    if (!watch_only && hid_fd < 0) {
         logm("cannot open /dev/hidg0 (%s): gadget not set up", strerror(errno));
         return 2;
     }
@@ -292,9 +298,11 @@ int main(int argc, char **argv)
                         if (was_combo) {
                             if (!fwd_down && !back_down) {
                                 combo = 0;
-                                orient = (orient + 1) & 7;
-                                logm("orientation -> %d", orient);
-                                save_cfg();
+                                if (!watch_only) {
+                                    orient = (orient + 1) & 7;
+                                    logm("orientation -> %d", orient);
+                                    save_cfg();
+                                }
                             }
                         } else {
                             /* sent on release, so a two-button press is not
