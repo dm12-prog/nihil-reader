@@ -1,0 +1,1 @@
+cmd_/tmp/nr/tools/kobo-hid/build-mod/usb_f_hid.ko := arm-linux-gnueabihf-ld -EL -r  -T ./scripts/module-common.lds --build-id  -o /tmp/nr/tools/kobo-hid/build-mod/usb_f_hid.ko /tmp/nr/tools/kobo-hid/build-mod/usb_f_hid.o /tmp/nr/tools/kobo-hid/build-mod/usb_f_hid.mod.o ;  true

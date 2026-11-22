@@ -413,9 +413,15 @@ static void cal_frame(void)
         if (c->tid < 0 || !is_pen(c)) continue;
         if (pen_down(c)) {
             if (!cal_was_down && cal_n < 2) {
-                cal_x[cal_n] = c->x; cal_y[cal_n] = c->y;
-                logm("direction check tap %d at raw %d,%d", cal_n + 1, c->x, c->y);
-                cal_n++;
+                logm("direction check tap %d at raw %d,%d p=%d", cal_n + 1, c->x, c->y, c->p);
+                if (cal_n == 1 && abs(c->x - cal_x[0]) < 300 && abs(c->y - cal_y[0]) < 300) {
+                    /* 22 Nov: the second tap landed on the first corner
+                       again; wait for a tap on the other corner */
+                    logm("  same corner as tap 1: ignored");
+                } else {
+                    cal_x[cal_n] = c->x; cal_y[cal_n] = c->y;
+                    cal_n++;
+                }
             }
             cal_was_down = 1;
         } else cal_was_down = 0;
@@ -446,7 +452,7 @@ static int calibrate(void)
     cal_n = 0; cal_was_down = 0;
     screen_msg("Pen direction. Hold the Kobo the way you will use it, then tap the TOP-LEFT corner with the pen.");
     while (cal_n < 1) if (pump(1000, cal_frame) < 0) return -1;
-    screen_msg("Good. Now tap the TOP-RIGHT corner with the pen.");
+    screen_msg("Good. Now tap the TOP-RIGHT corner with the pen (the other end of the top edge).");
     while (cal_n < 2 || cal_was_down) if (pump(1000, cal_frame) < 0) return -1;
     o = orient_from_taps(cal_x[0], cal_y[0], cal_x[1], cal_y[1],
                          (ax.minimum + ax.maximum) / 2.0, (ay.minimum + ay.maximum) / 2.0);
