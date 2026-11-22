@@ -13,12 +13,12 @@ The Kobo's kernel leaves out the USB HID gadget (`# CONFIG_USB_CONFIGFS_F_HID is
 `usb_f_hid.ko` is the kernel's own `drivers/usb/gadget/function/f_hid.c`, built out of tree
 against the Kobo's published source (github.com/kobolabs/b300-sage) with the Kobo's live
 config and `device.symvers`. `kobo-hid.sh` loads it, builds a two-function HID gadget
-(boot keyboard + absolute pointer) through configfs, then runs `kobo-hid`, which grabs the
-page buttons and touch panel and turns them into HID reports on `/dev/hidg0` / `/dev/hidg1`.
+(one HID function: report 1 keyboard, report 2 absolute pointer) through configfs, then runs `kobo-hid`, which grabs the
+page buttons and touch panel and turns them into HID reports on `/dev/hidg0`.
 Everything is in RAM: `kobo-hid.sh stop` or a restart removes it.
 
 ## Files on the Kobo
-`.adds/kobohid/`: `kobo-hid`, `usb_f_hid.ko`, `kbd.desc`, `ptr.desc`, `kobo-hid.sh`
+`.adds/kobohid/`: `kobo-hid`, `usb_f_hid.ko`, `combo.desc`, `kobo-hid.sh`
 (`config`, `start.log`, `kobo-hid.log` are created on first run).
 `.adds/nm/kobohid`: NickelMenu entries "Mac tablet - start" / "Mac tablet - stop" (NickelMenu labels must not contain a colon).
 

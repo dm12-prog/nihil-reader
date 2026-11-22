@@ -77,30 +77,25 @@ echo "Kobo" > strings/0x409/manufacturer
 echo "Kobo Sage Tablet" > strings/0x409/product
 echo "KOBOHID0001" > strings/0x409/serialnumber
 
-# keyboard (boot keyboard, 8-byte reports)
+# one HID function, two reports: ID 1 keyboard, ID 2 absolute pointer
+# (two separate functions need 4 endpoints and failed to bind on 22 Nov 2026)
 mkdir -p functions/hid.usb0
-echo 1 > functions/hid.usb0/protocol
-echo 1 > functions/hid.usb0/subclass
-echo 8 > functions/hid.usb0/report_length
-cat "$D/kbd.desc" > functions/hid.usb0/report_desc
-# absolute pointer: 3 buttons + X/Y 0..32767 (5-byte reports)
-mkdir -p functions/hid.usb1
-echo 0 > functions/hid.usb1/protocol
-echo 0 > functions/hid.usb1/subclass
-echo 5 > functions/hid.usb1/report_length
-cat "$D/ptr.desc" > functions/hid.usb1/report_desc
+echo 0 > functions/hid.usb0/protocol
+echo 0 > functions/hid.usb0/subclass
+echo 9 > functions/hid.usb0/report_length
+cat "$D/combo.desc" > functions/hid.usb0/report_desc
 
 mkdir -p configs/c.1/strings/0x409
 echo "keyboard + tablet" > configs/c.1/strings/0x409/configuration
 echo 100 > configs/c.1/MaxPower
 ln -s functions/hid.usb0 configs/c.1/
-ln -s functions/hid.usb1 configs/c.1/
 echo "$UDC" > UDC; echo "bind -> $?"
+dmesg | tail -n 15
 cd /
 
 # device files: create them if nothing else did
 sleep 1
-for n in 0 1; do
+for n in 0; do
   if [ ! -c /dev/hidg$n ] && [ -f /sys/class/hidg/hidg$n/dev ]; then
     mm=$(cat /sys/class/hidg/hidg$n/dev)
     mknod /dev/hidg$n c "${mm%%:*}" "${mm##*:}"; echo "mknod hidg$n $mm -> $?"

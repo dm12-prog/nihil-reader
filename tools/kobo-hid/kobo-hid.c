@@ -3,8 +3,10 @@
  * computer. The Kobo's page buttons type arrow keys; the stylus moves the
  * computer's pointer (pen down = click).
  *
- * Needs the USB HID gadget set up first (kobo-hid.sh does it): /dev/hidg0 is
- * the keyboard, /dev/hidg1 the absolute pointer.
+ * Needs the USB HID gadget set up first (kobo-hid.sh does it): one HID
+ * function, /dev/hidg0, with two reports: ID 1 keyboard (8 bytes), ID 2
+ * absolute pointer (5 bytes). One function uses only 2 USB endpoints; two
+ * functions (4 endpoints) failed to bind on the Kobo on 22 Nov 2026.
  *
  * Controls while running:
  *   lower page button  -> Right arrow      upper page button -> Left arrow
@@ -115,7 +117,7 @@ static void save_cfg(void)
 }
 
 /* ---- HID output ---- */
-static int kbd_fd = -1, ptr_fd = -1;
+static int hid_fd = -1;
 static long hid_errors;
 
 static void hid_write(int fd, const unsigned char *buf, int n, int must)
@@ -135,22 +137,23 @@ static void hid_write(int fd, const unsigned char *buf, int n, int must)
 
 static void send_key(int usage)
 {
-    unsigned char down[8] = {0, 0, (unsigned char)usage, 0, 0, 0, 0, 0};
-    unsigned char up[8] = {0};
-    hid_write(kbd_fd, down, 8, 1);
-    hid_write(kbd_fd, up, 8, 1);
+    unsigned char down[9] = {1, 0, 0, (unsigned char)usage, 0, 0, 0, 0, 0};
+    unsigned char up[9] = {1, 0};
+    hid_write(hid_fd, down, 9, 1);
+    hid_write(hid_fd, up, 9, 1);
 }
 
 static int last_btn = -1, last_x = -1, last_y = -1;
 
 static void send_ptr(int buttons, int x, int y, int must)
 {
-    unsigned char r[5];
+    unsigned char r[6];
     if (buttons == last_btn && x == last_x && y == last_y) return;
-    r[0] = buttons & 7;
-    r[1] = x & 0xff; r[2] = (x >> 8) & 0xff;
-    r[3] = y & 0xff; r[4] = (y >> 8) & 0xff;
-    hid_write(ptr_fd, r, 5, must || buttons != last_btn);
+    r[0] = 2;
+    r[1] = buttons & 7;
+    r[2] = x & 0xff; r[3] = (x >> 8) & 0xff;
+    r[4] = y & 0xff; r[5] = (y >> 8) & 0xff;
+    hid_write(hid_fd, r, 6, must || buttons != last_btn);
     last_btn = buttons; last_x = x; last_y = y;
 }
 
@@ -238,10 +241,9 @@ int main(int argc, char **argv)
     load_cfg();
     logm("config: ORIENT=%d FINGER=%d KEY_NEXT=0x%02x KEY_PREV=0x%02x", orient, finger_ok, key_next, key_prev);
 
-    kbd_fd = open("/dev/hidg0", O_RDWR | O_NONBLOCK);
-    ptr_fd = open("/dev/hidg1", O_RDWR | O_NONBLOCK);
-    if (kbd_fd < 0 || ptr_fd < 0) {
-        logm("cannot open /dev/hidg0 or /dev/hidg1 (%s): gadget not set up", strerror(errno));
+    hid_fd = open("/dev/hidg0", O_RDWR | O_NONBLOCK);
+    if (hid_fd < 0) {
+        logm("cannot open /dev/hidg0 (%s): gadget not set up", strerror(errno));
         return 2;
     }
     signal(SIGTERM, sig_stop);
