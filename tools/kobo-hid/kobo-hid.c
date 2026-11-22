@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <linux/uinput.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -119,6 +120,8 @@ static void save_cfg(void)
 
 /* ---- HID output ---- */
 static int hid_fd = -1;
+static int relay_fd = -1; /* "kobo-hid <log> relay <file>": copy the touch screen to a
+                             new virtual input device (for the VNC viewer), name in <file> */
 static int watch_only; /* "kobo-hid <log> watch": only hold the buttons and touch
                           screen away from the Kobo's software until stop */
 static long hid_errors;
@@ -229,6 +232,56 @@ static void map_xy(int rx, int ry, int *ox, int *oy)
     *oy = (int)(v * 32767 + 0.5);
 }
 
+/* Make a virtual copy of the touch screen with uinput. The Kobo's own
+   software only reads the devices it opened at boot, so the copy reaches the
+   VNC viewer and nothing else, while the real one stays grabbed. */
+static int relay_setup(int src, const char *namefile)
+{
+    struct uinput_user_dev ud;
+    unsigned long keyb[NLONGS(KEY_MAX + 1)], absb[NLONGS(ABS_MAX + 1)];
+    char sysname[64], path[160];
+    int fd, c;
+    FILE *f;
+    fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    if (fd < 0) { logm("relay: open /dev/uinput: %s", strerror(errno)); return -1; }
+    memset(&ud, 0, sizeof ud);
+    snprintf(ud.name, sizeof ud.name, "kobo-hid touch relay");
+    ud.id.bustype = BUS_VIRTUAL; ud.id.vendor = 0x4b4f; ud.id.product = 0x0001;
+    memset(keyb, 0, sizeof keyb); memset(absb, 0, sizeof absb);
+    ioctl(src, EVIOCGBIT(EV_KEY, sizeof keyb), keyb);
+    ioctl(src, EVIOCGBIT(EV_ABS, sizeof absb), absb);
+    ioctl(fd, UI_SET_EVBIT, EV_SYN);
+    ioctl(fd, UI_SET_EVBIT, EV_KEY);
+    ioctl(fd, UI_SET_EVBIT, EV_ABS);
+    for (c = 0; c <= KEY_MAX; c++) if (TEST_BIT(c, keyb)) ioctl(fd, UI_SET_KEYBIT, c);
+    for (c = 0; c < ABS_CNT; c++) {
+        struct input_absinfo ai;
+        if (!TEST_BIT(c, absb)) continue;
+        ioctl(fd, UI_SET_ABSBIT, c);
+        if (ioctl(src, EVIOCGABS(c), &ai) == 0) {
+            ud.absmin[c] = ai.minimum; ud.absmax[c] = ai.maximum;
+            ud.absfuzz[c] = ai.fuzz; ud.absflat[c] = ai.flat;
+        }
+    }
+    if (write(fd, &ud, sizeof ud) != sizeof ud || ioctl(fd, UI_DEV_CREATE) < 0) {
+        logm("relay: create failed: %s", strerror(errno)); close(fd); return -1;
+    }
+    usleep(300000);
+    path[0] = 0;
+    if (ioctl(fd, UI_GET_SYSNAME(sizeof sysname), sysname) >= 0) {
+        int i;
+        for (i = 0; i < 32; i++) {
+            char t[128];
+            snprintf(t, sizeof t, "/sys/devices/virtual/input/%s/event%d", sysname, i);
+            if (access(t, F_OK) == 0) { snprintf(path, sizeof path, "/dev/input/event%d", i); break; }
+        }
+    }
+    logm("relay: virtual touch device %s", path[0] ? path : "(not found)");
+    f = fopen(namefile, "w");
+    if (f) { fprintf(f, "%s\n", path); fclose(f); }
+    return fd;
+}
+
 int main(int argc, char **argv)
 {
     /* touch state (slot 0 only = first contact) */
@@ -245,7 +298,7 @@ int main(int argc, char **argv)
     load_cfg();
     logm("config: ORIENT=%d FINGER=%d KEY_NEXT=0x%02x KEY_PREV=0x%02x", orient, finger_ok, key_next, key_prev);
 
-    watch_only = argc > 2 && !strcmp(argv[2], "watch");
+    watch_only = argc > 2 && (!strcmp(argv[2], "watch") || !strcmp(argv[2], "relay"));
     if (watch_only) logm("watch mode: no USB output");
     else hid_fd = open("/dev/hidg0", O_RDWR | O_NONBLOCK);
     if (!watch_only && hid_fd < 0) {
@@ -256,6 +309,11 @@ int main(int argc, char **argv)
     signal(SIGINT, sig_stop);
     scan_inputs();
     if (n_in == 0) { logm("no input devices found"); return 3; }
+    if (argc > 3 && !strcmp(argv[2], "relay")) {
+        if (touch_idx < 0) { logm("relay: no touch screen"); return 4; }
+        relay_fd = relay_setup(in_fd[touch_idx], argv[3]);
+        if (relay_fd < 0) return 4;
+    }
 
     while (!stop_flag) {
         struct pollfd p[MAXDEV];
@@ -277,6 +335,10 @@ int main(int argc, char **argv)
             if (n <= 0) continue;
             for (k = 0; k < (int)(n / sizeof ev[0]); k++) {
                 struct input_event *e = &ev[k];
+                if (relay_fd >= 0 && i == touch_idx &&
+                    (e->type == EV_ABS || e->type == EV_KEY || e->type == EV_SYN)) {
+                    if (write(relay_fd, e, sizeof *e) != sizeof *e) hid_errors++;
+                }
                 if (e->type == EV_KEY) {
                     int c = e->code, is_fwd, is_back;
                     if (e->value == 2) continue; /* autorepeat */
@@ -339,6 +401,7 @@ int main(int argc, char **argv)
     /* let go of everything */
     if (last_btn > 0) send_ptr(0, last_x, last_y, 1);
     release_inputs();
+    if (relay_fd >= 0) { ioctl(relay_fd, UI_DEV_DESTROY); close(relay_fd); }
     logm("kobo-hid stop: %ld pen reports, %ld dropped/failed", n_moves, hid_errors);
     return 0;
 }
