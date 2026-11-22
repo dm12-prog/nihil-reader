@@ -62,6 +62,9 @@
 
 static const char *cfg_path = "/mnt/onboard/.adds/kobohid/config";
 static const char *fbink_path = "/mnt/onboard/.adds/koreader/fbink";
+/* KOReader's fbink is built without picture support ("fbink exit 65280"),
+   so the dot grid uses our own static FBInk build with Image enabled. */
+static const char *fbink_img_path = "/mnt/onboard/.adds/kobohid/fbink-img";
 static FILE *logfp;
 static volatile sig_atomic_t stop_flag;
 
@@ -410,7 +413,9 @@ static void draw_grid(void)
     unsigned char *row;
     FILE *f;
     char cmd[300];
-    if (!grid_mm || access(fbink_path, X_OK) != 0) return;
+    const char *fb = fbink_img_path;
+    if (!grid_mm) return;
+    if (access(fb, X_OK) != 0) { logm("grid: %s missing", fb); return; }
     step = (int)(grid_mm * 300 / 25.4 + 0.5); /* Sage: 300 pixels per inch */
     f = fopen(img, "wb");
     if (!f) { logm("grid: cannot write %s", img); return; }
@@ -427,7 +432,7 @@ static void draw_grid(void)
     free(row);
     fclose(f);
     /* not quiet: FBInk's messages go to start.log */
-    snprintf(cmd, sizeof cmd, "%s -c -f -g file=%s,x=0,y=0", fbink_path, img);
+    snprintf(cmd, sizeof cmd, "%s -c -f -g file=%s,x=0,y=0", fb, img);
     logm("grid: %d mm = %d px, fbink exit %d", grid_mm, step, system(cmd));
     unlink(img);
 }

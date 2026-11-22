@@ -13,7 +13,12 @@ USB mouse. Nothing is installed on the computer.
   in / out (Cmd + / Cmd -).
 - **Page buttons**: lower = next app (Cmd+Tab), upper = previous app; press
   again within 0.9 s to move further in the app switcher.
-- **Screen**: a dot grid (every 5 mm) to judge distances.
+- **Screen**: a dot grid (every 5 mm) to judge distances. Drawn with `fbink-img`, a
+  static build of FBInk (github.com/NiLuJe/FBInk, GPLv3, commit ded92fa) with picture
+  support; KOReader's own fbink is built without it. Build: i2c-tools 4.3 source in
+  `i2c-tools/`, then `make CROSS_TC=arm-linux-gnueabihf KOBO=true MINIMAL=true IMAGE=true
+  BITMAP=true DRAW=true static` and relink `Release/fbink_cmd.o -l:libfbink.a -lm` with
+  `-static -s`.
 - **Stop**: hold a finger in any screen corner for 2 s, or hold both page
   buttons for 1.5 s.
 - First start: two pen taps (top-left, then top-right corner, as you hold the
