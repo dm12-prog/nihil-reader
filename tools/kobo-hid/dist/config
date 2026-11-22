@@ -1,0 +1,10 @@
+# kobo-hid settings
+# ORIENT/ORIENT_SET: pen direction, set by "Mac tablet - pen direction"
+ORIENT=1
+ORIENT_SET=0
+# SCREEN: shape of the computer screen (16:10 most Macs, 16:9 most monitors, 0 = whole Kobo)
+SCREEN=16:10
+# SPEED: trackpad speed in percent; FINGER=0 turns the trackpad off; SCROLL=-1 flips scrolling
+SPEED=150
+FINGER=1
+SCROLL=1
