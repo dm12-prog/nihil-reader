@@ -78,6 +78,13 @@ static int scroll_dir = 1;  /* -1 flips scrolling */
 static int zoom_mode = 1;   /* pinch: 1 = Cmd+= / Cmd+-, 2 = Cmd + scroll wheel, 0 = off */
 static int grid_mm = 5;     /* dot grid spacing on the Kobo screen, 0 = no grid */
 static int buttons_ok = 1;  /* 0 = page buttons do nothing */
+/* PEN: 1 = pen is a plain pointer (works everywhere, no pressure);
+   2 = pen data for OpenTabletDriver on the computer (pressure). In mode 2 the
+   gadget uses pad-otd.desc (kobo-hid.sh): ID 1 = vendor pen report read by
+   OTD's XENX parser (status, X, Y, pressure; macOS itself ignores it), ID 5 =
+   trackpad, ID 3 = keys. The environment KOBOHID_PEN overrides the config. */
+static int pen_mode = 1;
+static int rel_id = 2;      /* trackpad report ID: 2 (PEN=1) or 5 (PEN=2) */
 
 static void logm(const char *fmt, ...)
 {
@@ -132,6 +139,7 @@ static void load_cfg(void)
         else if (!strcmp(key, "ZOOM")) zoom_mode = v;
         else if (!strcmp(key, "GRID")) grid_mm = v < 0 ? 0 : v;
         else if (!strcmp(key, "BUTTONS")) buttons_ok = v;
+        else if (!strcmp(key, "PEN")) pen_mode = v == 2 ? 2 : 1;
     }
     fclose(f);
 }
@@ -152,6 +160,8 @@ static void save_cfg(void)
     fprintf(f, "SPEED=%d\nFINGER=%d\nSCROLL=%d\n", speed, finger_ok, scroll_dir);
     fprintf(f, "# ZOOM: pinch sends 1 = Cmd+/Cmd-, 2 = Cmd+scroll, 0 = off; GRID: dot spacing in mm (0 = none); BUTTONS=0: page buttons off\n");
     fprintf(f, "ZOOM=%d\nGRID=%d\nBUTTONS=%d\n", zoom_mode, grid_mm, buttons_ok);
+    fprintf(f, "# PEN: 1 = pen moves the pointer (no driver needed); 2 = pen pressure through OpenTabletDriver on the computer\n");
+    fprintf(f, "PEN=%d\n", pen_mode);
     fclose(f);
     rename(tmp, cfg_path);
     sync();
@@ -196,6 +206,26 @@ static void send_abs(int buttons, int x, int y)
     abs_btn = buttons; abs_x = x; abs_y = y;
 }
 
+/* PEN=2: vendor pen report for OpenTabletDriver (XENX layout, OTD
+   Configurations/Parsers/XENX/XENXTabletReport.cs): byte 1 status (bit 0 pen
+   in range, bit 1 side button, bit 2 second side button; 0 = pen gone),
+   X, Y, pressure as 16-bit little endian */
+static int pen_st = -1, pen_x = -1, pen_y = -1, pen_p = -1;
+
+static void send_pen(int status, int x, int y, int p)
+{
+    unsigned char r[8];
+    int must = status != pen_st || (p > 0) != (pen_p > 0);
+    if (!must && x == pen_x && y == pen_y && p == pen_p) return;
+    r[0] = 1;
+    r[1] = status & 0xff;
+    r[2] = x & 0xff; r[3] = (x >> 8) & 0xff;
+    r[4] = y & 0xff; r[5] = (y >> 8) & 0xff;
+    r[6] = p & 0xff; r[7] = (p >> 8) & 0xff;
+    hid_write(r, 8, must);
+    pen_st = status; pen_x = x; pen_y = y; pen_p = p;
+}
+
 static int rel_btn = 0;
 
 static int clamp127(int v) { return v > 127 ? 127 : v < -127 ? -127 : v; }
@@ -207,7 +237,7 @@ static void send_rel(int buttons, int dx, int dy, int wheel, int pan)
     do {
         unsigned char r[6];
         int sx = clamp127(dx), sy = clamp127(dy), sw = clamp127(wheel), sp = clamp127(pan);
-        r[0] = 2;
+        r[0] = (unsigned char)rel_id;
         r[1] = buttons & 7;
         r[2] = (unsigned char)(signed char)sx;
         r[3] = (unsigned char)(signed char)sy;
@@ -487,6 +517,22 @@ static void map_abs(int rx, int ry, int *ox, int *oy)
     *oy = (int)(v * 32767 + 0.5);
 }
 
+/* raw pen position -> Kobo panel units as the Kobo is held (no screen-shape
+   crop: OpenTabletDriver maps the area itself) */
+void map_pen(int rx, int ry, int *ox, int *oy)
+{
+    double u, v, kw, kh;
+    held_uv(rx, ry, &u, &v);
+    kw = (orient & 1) ? ay.maximum - ay.minimum : ax.maximum - ax.minimum;
+    kh = (orient & 1) ? ax.maximum - ax.minimum : ay.maximum - ay.minimum;
+    if (u < 0) u = 0;
+    if (u > 1) u = 1;
+    if (v < 0) v = 0;
+    if (v > 1) v = 1;
+    *ox = (int)(u * kw + 0.5);
+    *oy = (int)(v * kh + 0.5);
+}
+
 /* ---- touch frames ---- */
 #define NSLOT 10
 struct contact { int tid, tool, x, y, p; };
@@ -738,9 +784,14 @@ static void pad_frame(void)
             logm("pen raw %d,%d p=%d touch=%d side=%d", pen->x, pen->y, pen->p, btn_touch, side_btn);
         }
         if (down) down_frames++; else hover_frames++;
-        map_abs(pen->x, pen->y, &x, &y);
-        b = down ? (side_btn ? 2 : 1) : 0;
-        send_abs(b, x, y);
+        if (pen_mode == 2) {
+            map_pen(pen->x, pen->y, &x, &y);
+            send_pen(1 | (side_btn ? 2 : 0), x, y, down && pen->p > ap.minimum ? pen->p - ap.minimum : 0);
+        } else {
+            map_abs(pen->x, pen->y, &x, &y);
+            b = down ? (side_btn ? 2 : 1) : 0;
+            send_abs(b, x, y);
+        }
         pen_active = 1;
         if (g_drag) { send_rel(0, 0, 0, 0, 0); g_drag = 0; }
         g_active = 0; /* a finger gesture under the pen hand is cancelled */
@@ -749,6 +800,7 @@ static void pad_frame(void)
     }
     if (pen_active) {
         if (abs_btn) send_abs(0, abs_x, abs_y);
+        if (pen_st > 0) send_pen(0, pen_x, pen_y, 0);
         pen_active = 0;
         pen_gone_t = now_ms();
     }
@@ -843,8 +895,10 @@ int main(int argc, char **argv)
     logfp = fopen(logpath, "a");
     logm("kobo-hid start (%s)", calib_only ? "pen direction" : "tablet + trackpad");
     load_cfg();
-    logm("config: ORIENT=%d ORIENT_SET=%d SCREEN=%d:%d SPEED=%d FINGER=%d SCROLL=%d ZOOM=%d GRID=%d BUTTONS=%d",
-         orient, orient_set, aspect_w, aspect_h, speed, finger_ok, scroll_dir, zoom_mode, grid_mm, buttons_ok);
+    if (getenv("KOBOHID_PEN")) pen_mode = atoi(getenv("KOBOHID_PEN")) == 2 ? 2 : 1;
+    rel_id = pen_mode == 2 ? 5 : 2;
+    logm("config: ORIENT=%d ORIENT_SET=%d SCREEN=%d:%d SPEED=%d FINGER=%d SCROLL=%d ZOOM=%d GRID=%d BUTTONS=%d PEN=%d",
+         orient, orient_set, aspect_w, aspect_h, speed, finger_ok, scroll_dir, zoom_mode, grid_mm, buttons_ok, pen_mode);
     signal(SIGTERM, sig_stop);
     signal(SIGINT, sig_stop);
 
@@ -858,6 +912,11 @@ int main(int argc, char **argv)
     scan_inputs();
     if (touch_idx < 0) { logm("no touch screen found"); release_inputs(); return 3; }
     touch_init();
+    if (pen_mode == 2)
+        logm("pen for OpenTabletDriver: X 0..%d, Y 0..%d, pressure 0..%d (as held)",
+             (orient & 1) ? ay.maximum - ay.minimum : ax.maximum - ax.minimum,
+             (orient & 1) ? ax.maximum - ax.minimum : ay.maximum - ay.minimum,
+             ap.maximum - ap.minimum);
 
     if (calib_only || !orient_set) {
         if (calibrate() < 0) { release_inputs(); return 0; }
@@ -893,6 +952,7 @@ int main(int argc, char **argv)
     }
 
     if (abs_btn) send_abs(0, abs_x, abs_y);
+    if (pen_st > 0) send_pen(0, pen_x, pen_y, 0);
     if (rel_btn) send_rel(0, 0, 0, 0, 0);
     if (cmd_release_t) send_kbd(0, 0);
     release_inputs();

@@ -12,3 +12,5 @@ SCROLL=1
 ZOOM=1
 GRID=5
 BUTTONS=1
+# PEN: 1 = pen moves the pointer (no driver needed); 2 = pen pressure through OpenTabletDriver on the computer
+PEN=1

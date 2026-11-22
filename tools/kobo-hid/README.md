@@ -32,7 +32,22 @@ the Kobo; `0` = whole Kobo), `SPEED=150` (trackpad, percent), `FINGER=0`
 instead of Cmd +/-; `0` = off), `GRID=5` (dot spacing in mm, `0` = no grid), `BUTTONS=0`
 (page buttons off). The Mac may ask once to identify a keyboard (the shortcut keys): close it.
 
-Not there yet: pen pressure (the computer gets a mouse, which has no pressure).
+## Pen pressure (OpenTabletDriver)
+"Mac tablet - start" makes the pen a plain pointer (no pressure, no driver needed).
+"Mac tablet - start with pen pressure" (or `PEN=2` in the config) instead sends the pen
+as a vendor report that only OpenTabletDriver (github.com/OpenTabletDriver, v0.6.8.1)
+reads; macOS ignores it, so the cursor is not moved twice. Without OpenTabletDriver
+running, the pen does nothing in this mode (trackpad and buttons still work).
+
+- USB IDs in this mode: vendor 0x1d6b, product 0x0105 (plain mode keeps 0x0104).
+- `pad-otd.desc`: ID 1 = pen (8 bytes: ID, status, X, Y, pressure; 16-bit little
+  endian; status bit 0 pen near, bit 1 / bit 2 side buttons, 0 = pen gone), ID 5 =
+  trackpad, ID 3 = keys. Layout = OpenTabletDriver's XENX parser
+  (`Configurations/Parsers/XENX/XENXTabletReport.cs`).
+- X 0..1919, Y 0..1439 as the Kobo is held in landscape, pressure 0..4095.
+- Tablet file for the Mac: `otd/Kobo Sage.json` ->
+  `~/Library/Application Support/OpenTabletDriver/Configurations/` (OpenTabletDriver
+  `AppInfo.cs` lists that folder), then restart OpenTabletDriver.
 
 ## How it works
 The Kobo's kernel leaves out the USB HID gadget (`# CONFIG_USB_CONFIGFS_F_HID is not set`).

@@ -12,6 +12,11 @@
 # the Kobo's system is changed), sets up a USB HID gadget through configfs,
 # then runs kobo-hid. Everything is gone after "stop" or a restart.
 #
+# PEN=2 in the config (or "kobo-hid.sh driver"): the pen sends position +
+# pressure for OpenTabletDriver on the computer instead of moving the pointer
+# itself (pad-otd.desc, product ID 0x0105). "kobo-hid.sh mouse" forces the
+# plain pointer (PEN=1) for one run, e.g. on a computer without the driver.
+#
 # "kobo-hid.sh stop" tears it down (used by the menu entry and on exit).
 # Nickel (the Kobo's own software) is paused while the tablet runs and resumed
 # afterwards; Kobo's watchdog "sickel" is ended first (see below).
@@ -62,6 +67,12 @@ fi
 
 exec > "$D/start.log" 2>&1
 date
+PEN=$(sed -n 's/^PEN=//p' "$D/config" 2>/dev/null | tail -n 1)
+[ "$1" = mouse ] && PEN=1
+[ "$1" = driver ] && PEN=2
+[ "$PEN" = 2 ] || PEN=1
+export KOBOHID_PEN=$PEN
+echo "pen mode: $PEN (1 = pointer, 2 = OpenTabletDriver)"
 if [ -s /tmp/kobohid.pid ] && kill -0 "$(cat /tmp/kobohid.pid)" 2>/dev/null; then echo "already running"; exit 0; fi
 if lsmod | grep -q "^g_mass_storage " || ! grep -q " /mnt/onboard " /proc/mounts; then
   echo "drive mode is on: not starting (restart the Kobo first)"; exit 1
@@ -89,13 +100,18 @@ echo "udc: $UDC"
 mkdir -p "$G" || { echo "mkdir gadget failed"; teardown; exit 1; }
 cd "$G" || exit 1
 echo 0x1d6b > idVendor     # Linux Foundation
-echo 0x0104 > idProduct    # Multifunction Composite Gadget
-echo 0x0300 > bcdDevice    # 3.00 = tablet + trackpad + shortcut keys
+if [ "$PEN" = 2 ]; then
+  DESC=pad-otd.desc; PID=0x0105; BCD=0x0400; SERIAL=KOBOHID0004
+else
+  DESC=pad.desc; PID=0x0104; BCD=0x0300; SERIAL=KOBOHID0003
+fi
+echo $PID > idProduct      # 0x0104 pointer pen, 0x0105 pen for OpenTabletDriver
+echo $BCD > bcdDevice      # 3.00 = tablet + trackpad + shortcut keys, 4.00 = driver pen
 echo 0x0200 > bcdUSB
 mkdir -p strings/0x409
 echo "Kobo" > strings/0x409/manufacturer
 echo "Kobo Sage Tablet" > strings/0x409/product
-echo "KOBOHID0003" > strings/0x409/serialnumber
+echo "$SERIAL" > strings/0x409/serialnumber
 
 # one HID function, three reports: ID 1 pen (absolute pointer), ID 2 trackpad,
 # ID 3 keyboard (zoom + app switching shortcuts; the Mac may ask once to identify it)
@@ -105,7 +121,9 @@ mkdir -p functions/hid.usb0
 echo 0 > functions/hid.usb0/protocol
 echo 0 > functions/hid.usb0/subclass
 echo 9 > functions/hid.usb0/report_length
-cat "$D/pad.desc" > functions/hid.usb0/report_desc
+# PEN=2 (pad-otd.desc): ID 5 trackpad, ID 3 keys, ID 1 vendor pen report
+# (status, X, Y, pressure) that only OpenTabletDriver reads
+cat "$D/$DESC" > functions/hid.usb0/report_desc; echo "report descriptor: $DESC"
 
 mkdir -p configs/c.1/strings/0x409
 echo "pen tablet + trackpad" > configs/c.1/strings/0x409/configuration

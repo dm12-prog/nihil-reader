@@ -1,0 +1,23 @@
+{
+  "Name": "Kobo Sage",
+  "Specifications": {
+    "Digitizer": {
+      "Width": 162.56,
+      "Height": 121.92,
+      "MaxX": 1919,
+      "MaxY": 1439
+    },
+    "Pen": {
+      "MaxPressure": 4095,
+      "ButtonCount": 2
+    }
+  },
+  "DigitizerIdentifiers": [
+    {
+      "VendorID": 7531,
+      "ProductID": 261,
+      "ReportParser": "OpenTabletDriver.Configurations.Parsers.XENX.XENXReportParser"
+    }
+  ],
+  "Attributes": {}
+}
