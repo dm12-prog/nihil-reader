@@ -20,7 +20,7 @@ Everything is in RAM: `kobo-hid.sh stop` or a restart removes it.
 ## Files on the Kobo
 `.adds/kobohid/`: `kobo-hid`, `usb_f_hid.ko`, `kbd.desc`, `ptr.desc`, `kobo-hid.sh`
 (`config`, `start.log`, `kobo-hid.log` are created on first run).
-`.adds/nm/kobohid`: NickelMenu entries "Mac tablet: start" / "Mac tablet: stop".
+`.adds/nm/kobohid`: NickelMenu entries "Mac tablet - start" / "Mac tablet - stop" (NickelMenu labels must not contain a colon).
 
 ## Build
     make                      # kobo-hid
