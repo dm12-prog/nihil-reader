@@ -76,6 +76,8 @@ fi
 teardown
 
 grep -q " /sys/kernel/config " /proc/mounts || mount -t configfs none /sys/kernel/config
+# page buttons are read from the GPIO debug file
+grep -q " /sys/kernel/debug " /proc/mounts || mount -t debugfs none /sys/kernel/debug
 echo "configfs mount -> $?"
 insmod "$D/usb_f_hid.ko"; echo "insmod usb_f_hid -> $?"
 dmesg | tail -n 5

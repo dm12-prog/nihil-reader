@@ -41,8 +41,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <linux/fb.h>
 #include <math.h>
 #include <sys/time.h>
 #include <time.h>
@@ -331,25 +329,42 @@ static void release_inputs(void)
 }
 
 /* ---- page buttons ----
-   The page buttons' input device is held by another program (EVIOCGRAB
-   "busy", 22 Nov), so their GPIO levels are read directly, read-only:
-   R_PIO port L data register 0x07022010, lower button PL5, upper PL11,
-   pressed = 0 (Nihil hardware notes). If /dev/mem cannot be mapped, key
-   events are used instead (they may never arrive). */
-static volatile unsigned int *rpio;
+   The page buttons' input device is held by another program (no key events
+   reach us, 22 Nov), and the Kobo kernel has no /dev/mem (CONFIG_DEVMEM is
+   not set). The kernel's GPIO debug file still shows each claimed pin's live
+   level ("gpio-357 (...) in hi"), so it is polled, read-only. Lower button
+   = PL5 = gpio 357, upper = PL11 = gpio 363 (port L = 11 * 32), pressed = lo
+   (Nihil hardware notes). kobo-hid.sh mounts debugfs. */
+static const char *gpio_dbg = "/sys/kernel/debug/gpio";
+static int gpio_ok;
 static int btn_now, btn_combo, gpio_last = -1, gpio_same;
-static long both_t;
+static long both_t, gpio_t;
+
+/* returns bit0 = lower pressed, bit1 = upper pressed; -1 if not found */
+static int gpio_read(int log)
+{
+    char line[160];
+    int st = 0, found = 0;
+    FILE *f = fopen(gpio_dbg, "r");
+    if (!f) return -1;
+    while (fgets(line, sizeof line, f)) {
+        int n;
+        if (log && strstr(line, "gpio-")) logm("  %.*s", (int)strcspn(line, "\n"), line);
+        if (sscanf(line, " gpio-%d", &n) != 1 || (n != 357 && n != 363)) continue;
+        found |= n == 357 ? 1 : 2;
+        if (strstr(line, " lo")) st |= n == 357 ? 1 : 2;
+    }
+    fclose(f);
+    return found == 3 ? st : -1;
+}
 
 static void gpio_init(void)
 {
-    void *m;
-    int fd = open("/dev/mem", O_RDONLY | O_SYNC);
-    if (fd < 0) { logm("buttons: /dev/mem: %s (using key events)", strerror(errno)); return; }
-    m = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0x07022000);
-    close(fd);
-    if (m == MAP_FAILED) { logm("buttons: mmap: %s (using key events)", strerror(errno)); return; }
-    rpio = (volatile unsigned int *)m;
-    logm("buttons: reading GPIO directly (port L = 0x%08x)", rpio[0x10 / 4]);
+    int st;
+    logm("buttons: GPIO lines in %s:", gpio_dbg);
+    st = gpio_read(1);
+    gpio_ok = st >= 0;
+    logm("buttons: %s", gpio_ok ? "reading gpio 357 / 363" : "pins not found (using key events)");
 }
 
 /* b: 1 = lower (next), 2 = upper (back); down: 1 pressed, 0 released */
@@ -372,55 +387,49 @@ static void key_event(int b, int down)
 static void gpio_poll(void)
 {
     int st;
-    unsigned int d;
-    if (!rpio) return;
-    d = rpio[0x10 / 4];
-    st = (((d >> 5) & 1) ? 0 : 1) | (((d >> 11) & 1) ? 0 : 2);
+    long now = now_ms();
+    if (!gpio_ok || now - gpio_t < 30) return;
+    gpio_t = now;
+    st = gpio_read(0);
+    if (st < 0) return;
     if (st != gpio_last) { gpio_last = st; gpio_same = 0; return; }
     if (++gpio_same != 1) return;           /* same level twice in a row: debounced */
     if ((st & 1) != (btn_now & 1)) key_event(1, st & 1);
     if ((st & 2) != (btn_now & 2)) key_event(2, (st & 2) != 0);
 }
 
-/* ---- dot grid on the Kobo screen ---- */
+/* ---- dot grid on the Kobo screen ----
+   On the Sage (Allwinner "sunxi") the picture is not taken from /dev/fb0:
+   FBInk draws into its own ION buffer (FBInk fbink.c, "via ION on sunxi").
+   So the grid is written as an image file and shown with fbink -g. A
+   1920x1920 image covers the screen in either direction; FBInk clamps it. */
 static void draw_grid(void)
 {
-    struct fb_var_screeninfo v;
-    struct fb_fix_screeninfo fx;
-    unsigned char *mem, *base;
-    int fd, x, y, bpp, step, dot = 3;
-    size_t size;
-    if (!grid_mm) return;
-    fd = open("/dev/fb0", O_RDWR);
-    if (fd < 0) { logm("grid: /dev/fb0: %s", strerror(errno)); return; }
-    if (ioctl(fd, FBIOGET_VSCREENINFO, &v) < 0 || ioctl(fd, FBIOGET_FSCREENINFO, &fx) < 0) {
-        logm("grid: fb info failed"); close(fd); return;
-    }
-    bpp = v.bits_per_pixel;
-    size = (size_t)fx.line_length * v.yres_virtual;
-    mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (mem == MAP_FAILED) { logm("grid: mmap failed"); close(fd); return; }
-    logm("grid: fb %ux%u %d bpp, line %u, offset %u,%u, rotate %u", v.xres, v.yres, bpp,
-         fx.line_length, v.xoffset, v.yoffset, v.rotate);
-    base = mem + (size_t)v.yoffset * fx.line_length + (size_t)v.xoffset * bpp / 8;
+    const char *img = "/tmp/kobohid-grid.pgm";
+    int n = 1920, x, y, step, dot = 3;
+    unsigned char *row;
+    FILE *f;
+    char cmd[300];
+    if (!grid_mm || access(fbink_path, X_OK) != 0) return;
     step = (int)(grid_mm * 300 / 25.4 + 0.5); /* Sage: 300 pixels per inch */
-    for (y = 0; y < (int)v.yres; y++) {
-        unsigned char *row = base + (size_t)y * fx.line_length;
-        int on_row = (y % step) < dot;
-        for (x = 0; x < (int)v.xres; x++) {
-            int black = on_row && (x % step) < dot;
-            if (bpp == 8) row[x] = black ? 0x00 : 0xff;
-            else if (bpp == 16) ((unsigned short *)row)[x] = black ? 0x0000 : 0xffff;
-            else if (bpp == 32) ((unsigned int *)row)[x] = black ? 0xff000000u : 0xffffffffu;
+    f = fopen(img, "wb");
+    if (!f) { logm("grid: cannot write %s", img); return; }
+    row = malloc(n);
+    fprintf(f, "P5\n%d %d\n255\n", n, n);
+    for (y = 0; y < n; y++) {
+        int on_row = (y % step) >= (step - dot) / 2 && (y % step) < (step - dot) / 2 + dot;
+        for (x = 0; x < n; x++) {
+            int on_col = (x % step) >= (step - dot) / 2 && (x % step) < (step - dot) / 2 + dot;
+            row[x] = on_row && on_col ? 0x00 : 0xff;
         }
+        fwrite(row, 1, n, f);
     }
-    munmap(mem, size);
-    close(fd);
-    if (access(fbink_path, X_OK) == 0) {
-        char cmd[256];
-        snprintf(cmd, sizeof cmd, "%s -q -s -f >/dev/null 2>&1", fbink_path);
-        if (system(cmd) != 0) logm("grid: fbink refresh failed");
-    }
+    free(row);
+    fclose(f);
+    /* not quiet: FBInk's messages go to start.log */
+    snprintf(cmd, sizeof cmd, "%s -c -f -g file=%s,x=0,y=0", fbink_path, img);
+    logm("grid: %d mm = %d px, fbink exit %d", grid_mm, step, system(cmd));
+    unlink(img);
 }
 
 static void screen_note(const char *text)
