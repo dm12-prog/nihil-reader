@@ -282,10 +282,49 @@ static int relay_setup(int src, const char *namefile)
     return fd;
 }
 
+/* ---- relay output ----
+   einkvnc reads the copy with libevdev, which (1) drops a value equal to the
+   last one it saw and (2) complains when a tracking ID repeats (the Elan
+   driver repeats it every frame). einkvnc also needs X, Y and pressure in
+   EVERY frame or it crashes (listener.rs unwraps them; 22 Nov 2026). So each
+   frame is rebuilt here from the tracked state of the first contact, and
+   X/Y/pressure are sent as a throwaway value followed by the real one, so
+   both always count as changes. */
+static int r_tid = -2, r_btn = -1, r_side = -1, r_x = -1, r_y = -1, r_p = -1;
+
+static void r_ev(int type, int code, int value)
+{
+    struct input_event e;
+    memset(&e, 0, sizeof e);
+    e.type = type; e.code = code; e.value = value;
+    if (write(relay_fd, &e, sizeof e) != sizeof e) hid_errors++;
+}
+
+static void r_abs(int code, int v, int *last, int max)
+{
+    int a = v + 1;
+    if (a == *last || a > max) a = v - 1;
+    if (a == *last) a = v + 2 <= max ? v + 2 : v - 2;
+    r_ev(EV_ABS, code, a);
+    r_ev(EV_ABS, code, v);
+    *last = v;
+}
+
+static void relay_frame(int tid, int x, int y, int p, int touch, int side)
+{
+    if (tid != r_tid) { r_ev(EV_ABS, ABS_MT_TRACKING_ID, tid); r_tid = tid; }
+    r_abs(ABS_MT_POSITION_X, x, &r_x, ax.maximum);
+    r_abs(ABS_MT_POSITION_Y, y, &r_y, ay.maximum);
+    r_abs(ABS_MT_PRESSURE, p, &r_p, 1 << 16);
+    if (touch != r_btn) { r_ev(EV_KEY, BTN_TOUCH, touch); r_btn = touch; }
+    if (side != r_side) { r_ev(EV_KEY, BTN_STYLUS, side); r_side = side; }
+    r_ev(EV_SYN, SYN_REPORT, 0);
+}
+
 int main(int argc, char **argv)
 {
     /* touch state (slot 0 only = first contact) */
-    int slot = 0, tid = -1, tool = 0, rx = 0, ry = 0, btn_touch = -1, side = 0;
+    int slot = 0, tid = -1, tool = 0, rx = 0, ry = 0, rp = 0, btn_touch = -1, side = 0;
     int have_btn_touch = 0;
     /* page buttons */
     int fwd_down = 0, back_down = 0, combo = 0;
@@ -336,10 +375,6 @@ int main(int argc, char **argv)
             if (n <= 0) continue;
             for (k = 0; k < (int)(n / sizeof ev[0]); k++) {
                 struct input_event *e = &ev[k];
-                if (relay_fd >= 0 && i == touch_idx &&
-                    (e->type == EV_ABS || e->type == EV_KEY || e->type == EV_SYN)) {
-                    if (write(relay_fd, e, sizeof *e) != sizeof *e) hid_errors++;
-                }
                 if (e->type == EV_KEY) {
                     int c = e->code, is_fwd, is_back;
                     if (e->value == 2) continue; /* autorepeat */
@@ -380,6 +415,7 @@ int main(int argc, char **argv)
                     case ABS_MT_TOOL_TYPE: if (slot == 0) tool = e->value; break;
                     case ABS_MT_POSITION_X: if (slot == 0) rx = e->value; break;
                     case ABS_MT_POSITION_Y: if (slot == 0) ry = e->value; break;
+                    case ABS_MT_PRESSURE: if (slot == 0) rp = e->value; break;
                     }
                 } else if (e->type == EV_SYN && e->code == SYN_REPORT && i == touch_idx) {
                     int x, y, contact, down, buttons;
@@ -398,6 +434,11 @@ int main(int argc, char **argv)
                             logm("finger held in a corner: stopping");
                             stop_flag = 1;
                         }
+                    }
+                    if (relay_fd >= 0) {
+                        int t = have_btn_touch ? (btn_touch > 0) : (tid >= 0);
+                        if (tid < 0) t = 0;
+                        relay_frame(tid, rx, ry, tid >= 0 ? rp : 0, t, side);
                     }
                     if (contact && has_tooltype && tool != MT_TOOL_PEN && !finger_ok) contact = 0;
                     if (!contact) {
