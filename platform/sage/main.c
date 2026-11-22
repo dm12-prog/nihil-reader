@@ -751,6 +751,8 @@ __attribute__((noreturn)) int main(void)
     uint32_t p_nap = pr[1] >= 19 ? pr[20] : 0;                /* 1 = let the core stand still while waiting */
     uint32_t p_batt = pr[1] >= 20 ? pr[21] : 255;             /* battery % as Kobo's software saw it at the start, 255 = unknown */
     uint32_t p_look = pr[1] >= 21 ? pr[22] : 0;               /* page look, 0 = plain (see rd_set_look) */
+    uint32_t p_idle = pr[1] >= 22 ? pr[23] : 10;              /* minutes without a button before Nihil hands back to Kobo */
+    if (p_idle < 1 || p_idle > 1440) p_idle = 10;
     /* The book (plain text) sits somewhere in what was Linux's memory: move it
      * to our own corner before we start using RAM for pictures. */
     uint32_t book_src = pr[32], book_len = pr[33];
@@ -764,7 +766,7 @@ __attribute__((noreturn)) int main(void)
         else
             for (uint32_t i = book_len; i-- > 0;) { d[i] = sr[i]; if (!(i & 0xFFFF)) wdt_feed(); }
     }
-    for (int i = 2; i < 23; i++)
+    for (int i = 2; i < 24; i++)
         lg(T_PARAM | (uint32_t)i, pr[i]);
     pr[0] = 0;                                                /* one-shot */
     LTL = tm.lsl + tm.lbl + tm.ldl + tm.lel;
@@ -942,10 +944,10 @@ __attribute__((noreturn)) int main(void)
             continue;
         }
         int down = !((l >> BTN_NEXT_PIN) & 1), up = !((l >> BTN_BACK_PIN) & 1);
-        /* Leave after 10 minutes without a press. This also covers a closed
+        /* Leave after p_idle minutes without a press (IDLE_MIN in run-test1.sh). This also covers a closed
          * cover: Nihil has no low-power sleep yet, so it hands back to Kobo's
          * own software, which does. */
-        if ((ticks() - idle_from) / 24000000u >= 600u) {
+        if (ticks() - idle_from >= (uint64_t)p_idle * 60u * 24000000u) {
             lg(T_READ | 2, turns);
             break;
         }

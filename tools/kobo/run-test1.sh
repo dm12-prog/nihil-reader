@@ -7,6 +7,7 @@ MODE=1          # 1 = GC16 (full 16-grey update), 3 = DU (fast black/white)
 NAP=1           # 1 = the processor core stands still while Nihil waits for a button, 0 = it runs flat out as before
 LIGHT=1         # 1 = Nihil drives the frontlight (menu: Light, Warmth), 0 = it leaves the light chips alone
 LOOK=2          # page look: 0 = plain (as it always was), 1 = Kobalt plus, 2 = Classic book, 3 = Bare
+IDLE_MIN=30     # minutes without a button press before Nihil hands the Kobo back to its own software (1..1440)
 STORE=1         # 1 = Nihil reads the book library straight from the Kobo's storage chip (read-only), 0 = only the one book handed over in RAM
 D=/mnt/onboard/.adds/nihil
 mkdir /tmp/nihil.lock 2>/dev/null || exit 0     # a double tap must not start two runs
@@ -97,7 +98,7 @@ for f in /sys/class/power_supply/*/status /sys/class/power_supply/*/voltage_now 
   [ -r "$f" ] && echo "$f: $(cat $f 2>&1)"
 done
 echo "battery handed to Nihil: $BATT"
-ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE},${LIGHT},${NAP},${BATT},${LOOK}"
+ARGS="${ARGS}${DRIVE},${MODE},0,${PM1},${PM2},${ROT},${STORE},${LIGHT},${NAP},${BATT},${LOOK},${IDLE_MIN}"
 echo "args=$ARGS"
 grep -o "waveform[^ ]*" /proc/cmdline
 dmesg | grep -i -E "wavefile|waveform|eink lib|temperature" | tail -20
