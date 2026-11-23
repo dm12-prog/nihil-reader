@@ -4,9 +4,11 @@ Plug the Kobo into a computer with a USB cable and it shows up as a standard
 USB mouse. Nothing is installed on the computer.
 
 - **Pen**: the pointer goes to the same spot of the screen (like a drawing
-  tablet). Pen touching = left button held (click, drag, draw). Pen side
-  button = right click, also while the pen hovers just above the screen; a
-  second side button (if the pen has one) = middle click.
+  tablet). Pen touching = left button held (click, drag, draw). Holding
+  the pen's first button holds the left button, also while the pen hovers just
+  above the screen (drag without pressing on the glass); the second button =
+  right click. `PENBTN=2` swaps them. In pen-pressure mode the buttons go to
+  OpenTabletDriver as pen buttons 1 and 2 and its Bindings decide.
 - **One finger**: trackpad (moves the pointer; faster moves go further).
   Tap = click.
   Tap, then touch again and hold or move = drag (button held until you lift).
@@ -34,7 +36,7 @@ USB mouse. Nothing is installed on the computer.
 
 Settings in `.adds/kobohid/config`: `SCREEN=16:10` (shape of the computer
 screen; the pen area is the biggest rectangle of that shape in the middle of
-the Kobo; `0` = whole Kobo), `SPEED=200` (trackpad, percent), `ACCEL=100` (acceleration, `0` = none),
+the Kobo; `0` = whole Kobo), `SPEED=250` (trackpad, percent), `ACCEL=100` (acceleration, `0` = none),
 `GESTURES=0` (no three-finger gestures), `FINGER=0`
 (pen only), `SCROLL=-1` (flip scrolling), `ZOOM=2` (pinch sends Cmd + scroll
 instead of Cmd +/-; `0` = off), `GRID=5` (dot spacing in mm, `0` = no grid), `BUTTONS=0`

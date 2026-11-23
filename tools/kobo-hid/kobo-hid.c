@@ -5,8 +5,8 @@
  *   pen                     -> moves the pointer to the same spot of the
  *                              screen (absolute, like a drawing tablet);
  *                              pen touching = left button held,
- *                              pen side button = right button (also
- *                              while hovering), second side button = middle
+ *                              pen button held = left button held (drag
+ *                              while hovering), other pen button = right
  *   one finger              -> trackpad: moves the pointer (relative,
  *                              SPEED percent, faster moves go further: ACCEL)
  *   one-finger tap          -> click (sent 250 ms later, see next line)
@@ -78,8 +78,9 @@ static volatile sig_atomic_t stop_flag;
 static int orient = 1;      /* 0..7: bit0 swap x/y, bit1 mirror x, bit2 mirror y */
 static int orient_set = 0;  /* 1 = pen direction was set by the two-tap check */
 static int aspect_w = 16, aspect_h = 10; /* computer screen shape; 0 = use whole Kobo */
-static int speed = 200;     /* trackpad speed, percent */
+static int speed = 250;     /* trackpad speed, percent */
 static int accel = 100;     /* trackpad acceleration, percent (0 = none): fast moves go further */
+static int pen_btn_swap = 0; /* PENBTN=2 swaps the pen's two side buttons */
 static int gestures_ok = 1; /* three fingers: swipe = Mission Control / desktops, tap = middle click */
 static int finger_ok = 1;   /* 0 = no trackpad (pen only) */
 static int scroll_dir = 1;  /* -1 flips scrolling */
@@ -144,6 +145,7 @@ static void load_cfg(void)
         else if (!strcmp(key, "SPEED")) speed = v > 10 ? v : 10;
         else if (!strcmp(key, "ACCEL")) accel = v < 0 ? 0 : v;
         else if (!strcmp(key, "GESTURES")) gestures_ok = v;
+        else if (!strcmp(key, "PENBTN")) pen_btn_swap = v == 2;
         else if (!strcmp(key, "FINGER")) finger_ok = v;
         else if (!strcmp(key, "SCROLL")) scroll_dir = v < 0 ? -1 : 1;
         else if (!strcmp(key, "ZOOM")) zoom_mode = v;
@@ -170,6 +172,8 @@ static void save_cfg(void)
     fprintf(f, "SPEED=%d\nFINGER=%d\nSCROLL=%d\n", speed, finger_ok, scroll_dir);
     fprintf(f, "# ACCEL: trackpad acceleration in percent (0 = none); GESTURES=0: no three-finger gestures\n");
     fprintf(f, "ACCEL=%d\nGESTURES=%d\n", accel, gestures_ok);
+    fprintf(f, "# PENBTN: 1 = first pen button holds the left button (drag), second = right click; 2 = the other way round\n");
+    fprintf(f, "PENBTN=%d\n", pen_btn_swap ? 2 : 1);
     fprintf(f, "# ZOOM: pinch sends 1 = Cmd+/Cmd-, 2 = Cmd+scroll, 0 = off; GRID: dot spacing in mm (0 = none); BUTTONS=0: page buttons off\n");
     fprintf(f, "ZOOM=%d\nGRID=%d\nBUTTONS=%d\n", zoom_mode, grid_mm, buttons_ok);
     fprintf(f, "# PEN: 1 = pen moves the pointer (no driver needed); 2 = pen pressure through OpenTabletDriver on the computer\n");
@@ -574,6 +578,11 @@ static int touch_event(const struct input_event *e)
 {
     struct contact *c = &sl[cur_slot];
     if (e->type == EV_KEY) {
+        static int keys_logged;
+        if (e->code != BTN_TOUCH && e->code != BTN_TOOL_PEN && e->code != BTN_TOOL_FINGER && keys_logged < 30) {
+            keys_logged++;
+            logm("touch screen key 0x%x = %d", e->code, e->value);
+        }
         if (e->code == BTN_TOUCH) { btn_touch = e->value > 0; have_btn_touch = 1; }
         else if (e->code == BTN_STYLUS) side_btn = e->value > 0;
         else if (e->code == BTN_STYLUS2) side_btn2 = e->value > 0;
@@ -806,21 +815,28 @@ static void pad_frame(void)
 
     /* pen: absolute pointer */
     if (pen) {
-        int x, y, down = pen_down(pen), b;
+        int x, y, down = pen_down(pen), b, hold, rbtn;
         if (pen_frames_logged < 40) {
             pen_frames_logged++;
             logm("pen raw %d,%d p=%d touch=%d side=%d side2=%d", pen->x, pen->y, pen->p, btn_touch, side_btn, side_btn2);
         }
         if (down) down_frames++; else hover_frames++;
+        /* pen buttons (23 Nov, Diogo: "the left button of the pen should
+           hold, so I can hold it to drag stuff"): one button holds the
+           left button while pressed, also with the pen hovering, so you
+           can drag without pressing on the screen; the other = right
+           button. PENBTN=2 swaps them. */
+        hold = pen_btn_swap ? side_btn2 : side_btn;
+        rbtn = pen_btn_swap ? side_btn : side_btn2;
         if (pen_mode == 2) {
+            /* OpenTabletDriver: buttons are passed through as they are
+               (bit 1 = first button, bit 2 = second); what they do is set in
+               OTD's Bindings (on Diogo's Mac pen button 1 = left button held) */
             map_pen(pen->x, pen->y, &x, &y);
             send_pen(1 | (side_btn ? 2 : 0) | (side_btn2 ? 4 : 0), x, y, down && pen->p > ap.minimum ? pen->p - ap.minimum : 0);
         } else {
             map_abs(pen->x, pen->y, &x, &y);
-            /* tip = left button; side button = right button, also while
-               hovering (press it near the screen to right click); second
-               side button = middle button */
-            b = side_btn ? 2 : side_btn2 ? 4 : down ? 1 : 0;
+            b = hold || down ? 1 : rbtn ? 2 : 0;
             if (b != abs_btn && b) logm("pen button %d", b);
             send_abs(b, x, y);
         }
