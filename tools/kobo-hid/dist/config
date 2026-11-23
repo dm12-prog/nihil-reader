@@ -1,0 +1,21 @@
+# kobo-hid settings
+# ORIENT/ORIENT_SET: pen direction, set by "Mac tablet - pen direction"
+ORIENT=0
+ORIENT_SET=1
+# SCREEN: shape of the computer screen (16:10 most Macs, 16:9 most monitors, 0 = whole Kobo)
+SCREEN=16:10
+# SPEED: trackpad speed in percent; FINGER=0 turns the trackpad off; SCROLL=-1 flips scrolling
+SPEED=250
+FINGER=1
+SCROLL=1
+# ACCEL: trackpad acceleration in percent (0 = none); GESTURES=0: no three-finger gestures
+ACCEL=100
+GESTURES=1
+# PENBTN: 1 = first pen button holds the left button (drag), second = right click; 2 = the other way round
+PENBTN=1
+# ZOOM: pinch sends 1 = Cmd+/Cmd-, 2 = Cmd+scroll, 0 = off; GRID: dot spacing in mm (0 = none); BUTTONS=0: page buttons off
+ZOOM=1
+GRID=5
+BUTTONS=1
+# PEN: 1 = pen moves the pointer (no driver needed); 2 = pen pressure through OpenTabletDriver on the computer
+PEN=1

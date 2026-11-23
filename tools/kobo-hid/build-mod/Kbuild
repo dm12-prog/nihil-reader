@@ -1,0 +1,3 @@
+obj-m := usb_f_hid.o
+usb_f_hid-y := f_hid.o
+ccflags-y := -I$(KDIR)/drivers/usb/gadget -I$(KDIR)/drivers/usb/gadget/function
