@@ -5,12 +5,19 @@ USB mouse. Nothing is installed on the computer.
 
 - **Pen**: the pointer goes to the same spot of the screen (like a drawing
   tablet). Pen touching = left button held (click, drag, draw). Pen side
-  button = right button.
-- **One finger**: trackpad (moves the pointer). Tap = click.
+  button = right click, also while the pen hovers just above the screen; a
+  second side button (if the pen has one) = middle click.
+- **One finger**: trackpad (moves the pointer; faster moves go further).
+  Tap = click.
   Tap, then touch again and hold or move = drag (button held until you lift).
   Two quick taps = double click.
 - **Two fingers**: tap = right click, move = scroll, spread / pinch = zoom
-  in / out (Cmd + / Cmd -).
+  in / out (Cmd with the keypad + / - keys, which work on any keyboard layout;
+  the main-row "-" key types ' on a Portuguese layout). Pinch works with one
+  finger still.
+- **Three fingers**: swipe up = Mission Control, down = app windows, left /
+  right = next / previous desktop (macOS shortcuts Ctrl+arrows); tap = middle
+  click.
 - **Page buttons**: lower = next app (Cmd+Tab), upper = previous app; press
   again within 0.9 s to move further in the app switcher.
 - **Screen**: a dot grid (every 5 mm) to judge distances. Drawn with `fbink-img`, a
@@ -27,7 +34,8 @@ USB mouse. Nothing is installed on the computer.
 
 Settings in `.adds/kobohid/config`: `SCREEN=16:10` (shape of the computer
 screen; the pen area is the biggest rectangle of that shape in the middle of
-the Kobo; `0` = whole Kobo), `SPEED=150` (trackpad, percent), `FINGER=0`
+the Kobo; `0` = whole Kobo), `SPEED=200` (trackpad, percent), `ACCEL=100` (acceleration, `0` = none),
+`GESTURES=0` (no three-finger gestures), `FINGER=0`
 (pen only), `SCROLL=-1` (flip scrolling), `ZOOM=2` (pinch sends Cmd + scroll
 instead of Cmd +/-; `0` = off), `GRID=5` (dot spacing in mm, `0` = no grid), `BUTTONS=0`
 (page buttons off). The Mac may ask once to identify a keyboard (the shortcut keys): close it.

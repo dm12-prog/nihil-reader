@@ -5,14 +5,20 @@
  *   pen                     -> moves the pointer to the same spot of the
  *                              screen (absolute, like a drawing tablet);
  *                              pen touching = left button held,
- *                              pen side button = right button
- *   one finger              -> trackpad: moves the pointer (relative)
+ *                              pen side button = right button (also
+ *                              while hovering), second side button = middle
+ *   one finger              -> trackpad: moves the pointer (relative,
+ *                              SPEED percent, faster moves go further: ACCEL)
  *   one-finger tap          -> click (sent 250 ms later, see next line)
  *   tap, then touch again   -> held: drag (button down until lifted);
  *                              quick second tap: double click
  *   two-finger tap          -> right click
  *   two fingers moving      -> scroll
- *   two fingers apart/together -> zoom in/out (Cmd + / Cmd -)
+ *   two fingers apart/together -> zoom in/out (Cmd + keypad +/-)
+ *   three fingers           -> swipe up: Mission Control (Ctrl+Up), down:
+ *                              app windows (Ctrl+Down), left/right: next /
+ *                              previous desktop (Ctrl+Right/Left); tap:
+ *                              middle click
  *   lower page button       -> next app (Cmd+Tab; press again within
  *                              0.9 s to go further), upper -> previous app
  *   both page buttons 1.5 s, or a finger held in a corner 2 s -> stop
@@ -72,7 +78,9 @@ static volatile sig_atomic_t stop_flag;
 static int orient = 1;      /* 0..7: bit0 swap x/y, bit1 mirror x, bit2 mirror y */
 static int orient_set = 0;  /* 1 = pen direction was set by the two-tap check */
 static int aspect_w = 16, aspect_h = 10; /* computer screen shape; 0 = use whole Kobo */
-static int speed = 150;     /* trackpad speed, percent */
+static int speed = 200;     /* trackpad speed, percent */
+static int accel = 100;     /* trackpad acceleration, percent (0 = none): fast moves go further */
+static int gestures_ok = 1; /* three fingers: swipe = Mission Control / desktops, tap = middle click */
 static int finger_ok = 1;   /* 0 = no trackpad (pen only) */
 static int scroll_dir = 1;  /* -1 flips scrolling */
 static int zoom_mode = 1;   /* pinch: 1 = Cmd+= / Cmd+-, 2 = Cmd + scroll wheel, 0 = off */
@@ -134,6 +142,8 @@ static void load_cfg(void)
             else { aspect_w = 0; aspect_h = 0; }
         }
         else if (!strcmp(key, "SPEED")) speed = v > 10 ? v : 10;
+        else if (!strcmp(key, "ACCEL")) accel = v < 0 ? 0 : v;
+        else if (!strcmp(key, "GESTURES")) gestures_ok = v;
         else if (!strcmp(key, "FINGER")) finger_ok = v;
         else if (!strcmp(key, "SCROLL")) scroll_dir = v < 0 ? -1 : 1;
         else if (!strcmp(key, "ZOOM")) zoom_mode = v;
@@ -158,6 +168,8 @@ static void save_cfg(void)
     if (aspect_w) fprintf(f, "SCREEN=%d:%d\n", aspect_w, aspect_h); else fprintf(f, "SCREEN=0\n");
     fprintf(f, "# SPEED: trackpad speed in percent; FINGER=0 turns the trackpad off; SCROLL=-1 flips scrolling\n");
     fprintf(f, "SPEED=%d\nFINGER=%d\nSCROLL=%d\n", speed, finger_ok, scroll_dir);
+    fprintf(f, "# ACCEL: trackpad acceleration in percent (0 = none); GESTURES=0: no three-finger gestures\n");
+    fprintf(f, "ACCEL=%d\nGESTURES=%d\n", accel, gestures_ok);
     fprintf(f, "# ZOOM: pinch sends 1 = Cmd+/Cmd-, 2 = Cmd+scroll, 0 = off; GRID: dot spacing in mm (0 = none); BUTTONS=0: page buttons off\n");
     fprintf(f, "ZOOM=%d\nGRID=%d\nBUTTONS=%d\n", zoom_mode, grid_mm, buttons_ok);
     fprintf(f, "# PEN: 1 = pen moves the pointer (no driver needed); 2 = pen pressure through OpenTabletDriver on the computer\n");
@@ -263,6 +275,16 @@ static void click(int button)
 #define HK_TAB    0x2b
 #define HK_MINUS  0x2d
 #define HK_EQUAL  0x2e
+/* zoom uses the keypad - and + keys: they type - and + on every keyboard
+   layout (on a Portuguese Mac layout the main-row key 0x2d types ' , so
+   Cmd + "-" never reached apps: 23 Nov "zoom out doesn't work") */
+#define HK_KP_MINUS 0x56
+#define HK_KP_PLUS  0x57
+#define MOD_CTRL  0x01
+#define HK_RIGHT  0x4f
+#define HK_LEFT   0x50
+#define HK_DOWN   0x51
+#define HK_UP     0x52
 
 static void send_kbd(int mod, int key)
 {
@@ -298,7 +320,8 @@ static void zoom_step(int in)
         usleep(12000);
         send_kbd(cmd_release_t ? MOD_CMD : 0, 0);
     } else if (zoom_mode == 1) {
-        key_tap(MOD_CMD, in ? HK_EQUAL : HK_MINUS);
+        key_tap(MOD_CMD, in ? HK_KP_PLUS : HK_KP_MINUS);
+        logm("zoom %s", in ? "in" : "out");
         send_kbd(cmd_release_t ? MOD_CMD : 0, 0);
     }
 }
@@ -537,13 +560,13 @@ void map_pen(int rx, int ry, int *ox, int *oy)
 #define NSLOT 10
 struct contact { int tid, tool, x, y, p; };
 static struct contact sl[NSLOT];
-static int cur_slot, btn_touch, have_btn_touch, side_btn;
+static int cur_slot, btn_touch, have_btn_touch, side_btn, side_btn2;
 
 static void touch_init(void)
 {
     int i;
     for (i = 0; i < NSLOT; i++) { sl[i].tid = -1; sl[i].tool = 0; sl[i].p = 0; }
-    cur_slot = 0; btn_touch = 0; have_btn_touch = 0; side_btn = 0;
+    cur_slot = 0; btn_touch = 0; have_btn_touch = 0; side_btn = 0; side_btn2 = 0;
 }
 
 /* feed one event; returns 1 at the end of a frame (SYN_REPORT) */
@@ -552,7 +575,8 @@ static int touch_event(const struct input_event *e)
     struct contact *c = &sl[cur_slot];
     if (e->type == EV_KEY) {
         if (e->code == BTN_TOUCH) { btn_touch = e->value > 0; have_btn_touch = 1; }
-        else if (e->code == BTN_STYLUS || e->code == BTN_STYLUS2) side_btn = e->value > 0;
+        else if (e->code == BTN_STYLUS) side_btn = e->value > 0;
+        else if (e->code == BTN_STYLUS2) side_btn2 = e->value > 0;
         else if (e->code == BTN_TOOL_PEN && e->value && !has_tooltype) c->tool = MT_TOOL_PEN;
         return 0;
     }
@@ -724,6 +748,9 @@ static int g_tap2, g_drag;        /* this touch follows a tap / button held */
 /* two fingers: scroll or zoom */
 static int g_two_mode;            /* 0 undecided, 1 scroll, 2 zoom */
 static double g_d0, g_dstep;
+static int g_f0x[2], g_f0y[2];    /* where the two fingers started */
+static int g_gx, g_gy, g_gdone;   /* three fingers: travel, gesture sent */
+static long g_last_t;             /* time of the last trackpad frame */
 static int g_ctravel;
 static long hover_frames, down_frames, pen_frames_logged;
 
@@ -734,7 +761,8 @@ static void finger_up_all(void)
         send_rel(0, 0, 0, 0, 0);
         g_drag = 0;
     } else if (!g_moved && dt < TAP_MS) {
-        if (g_max_fingers >= 2) { logm("two-finger tap: right click"); click(2); }
+        if (g_max_fingers >= 3) { if (gestures_ok) { logm("three-finger tap: middle click"); click(4); } }
+        else if (g_max_fingers == 2) { logm("two-finger tap: right click"); click(2); }
         else if (g_tap2) { click(1); usleep(30000); click(1); } /* tap tap: double click */
         else tap_pending_t = now_ms();                          /* maybe the start of tap-drag */
     }
@@ -781,15 +809,19 @@ static void pad_frame(void)
         int x, y, down = pen_down(pen), b;
         if (pen_frames_logged < 40) {
             pen_frames_logged++;
-            logm("pen raw %d,%d p=%d touch=%d side=%d", pen->x, pen->y, pen->p, btn_touch, side_btn);
+            logm("pen raw %d,%d p=%d touch=%d side=%d side2=%d", pen->x, pen->y, pen->p, btn_touch, side_btn, side_btn2);
         }
         if (down) down_frames++; else hover_frames++;
         if (pen_mode == 2) {
             map_pen(pen->x, pen->y, &x, &y);
-            send_pen(1 | (side_btn ? 2 : 0), x, y, down && pen->p > ap.minimum ? pen->p - ap.minimum : 0);
+            send_pen(1 | (side_btn ? 2 : 0) | (side_btn2 ? 4 : 0), x, y, down && pen->p > ap.minimum ? pen->p - ap.minimum : 0);
         } else {
             map_abs(pen->x, pen->y, &x, &y);
-            b = down ? (side_btn ? 2 : 1) : 0;
+            /* tip = left button; side button = right button, also while
+               hovering (press it near the screen to right click); second
+               side button = middle button */
+            b = side_btn ? 2 : side_btn2 ? 4 : down ? 1 : 0;
+            if (b != abs_btn && b) logm("pen button %d", b);
             send_abs(b, x, y);
         }
         pen_active = 1;
@@ -818,6 +850,7 @@ static void pad_frame(void)
         g_active = 1; g_max_fingers = 0; g_moved = 0; g_travel = 0; g_nf = 0;
         g_start_t = now_ms();
         acc_x = acc_y = acc_s = acc_p = 0;
+        g_gx = g_gy = 0; g_gdone = 0; g_last_t = now_ms();
         /* a touch soon after a tap: drag if held or moved, double click if tapped */
         g_tap2 = tap_pending_t && now_ms() - tap_pending_t < TAP_WAIT_MS;
         tap_pending_t = 0;
@@ -830,8 +863,10 @@ static void pad_frame(void)
         if (nf == 2) {
             g_d0 = g_dstep = hypot(f2x[1] - f2x[0], f2y[1] - f2y[0]);
             g_two_mode = 0; g_ctravel = 0;
+            g_f0x[0] = f2x[0]; g_f0y[0] = f2y[0]; g_f0x[1] = f2x[1]; g_f0y[1] = f2y[1];
         }
         if (nf != 1 && g_drag) { send_rel(0, 0, 0, 0, 0); g_drag = 0; }
+        g_last_t = now_ms();
         return;
     }
     if (nf == 1 && g_tap2 && !g_drag && g_max_fingers == 1 && now_ms() - g_start_t > 200) {
@@ -843,13 +878,42 @@ static void pad_frame(void)
         held_d(rdx, rdy, &dx, &dy);
         g_lastx = fx; g_lasty = fy;
 
+        if (nf >= 3 || g_max_fingers >= 3) {
+            /* three fingers: one gesture per touch, chosen by the main
+               direction once the hand has moved ~13 mm (150 raw units).
+               macOS default shortcuts: Ctrl+Up Mission Control, Ctrl+Down
+               App windows, Ctrl+Left/Right move one desktop (Space) */
+            if (!gestures_ok || g_gdone) return;
+            g_gx += dx; g_gy += dy;
+            if (abs(g_gx) + abs(g_gy) > 20) g_moved = 1;
+            if (abs(g_gx) < 150 && abs(g_gy) < 150) return;
+            g_gdone = 1;
+            if (abs(g_gy) >= abs(g_gx)) {
+                logm("three-finger swipe %s", g_gy < 0 ? "up: Mission Control" : "down: app windows");
+                key_tap(MOD_CTRL, g_gy < 0 ? HK_UP : HK_DOWN);
+            } else {
+                /* like a Mac trackpad: swipe left shows the desktop on the right */
+                logm("three-finger swipe %s", g_gx < 0 ? "left: next desktop" : "right: previous desktop");
+                key_tap(MOD_CTRL, g_gx < 0 ? HK_RIGHT : HK_LEFT);
+            }
+            send_kbd(cmd_release_t ? MOD_CMD : 0, 0);
+            return;
+        }
         if (nf >= 2) {
             double d = hypot(f2x[1] - f2x[0], f2y[1] - f2y[0]);
             g_ctravel += abs(dx) + abs(dy);
             if (g_two_mode == 0) {
-                if (fabs(d - g_d0) > 80 && fabs(d - g_d0) > g_ctravel) { g_two_mode = 2; g_moved = 1; g_dstep = d; }
-                else if (g_ctravel > 40) { g_two_mode = 1; g_moved = 1; }
-                else return;
+                /* pinch or scroll? In a scroll both fingers move the same
+                   way, so their distance stays the same; in a pinch it
+                   changes by at least half of what the faster finger moved
+                   (thumb still, finger moving: about all of it) */
+                double m0 = hypot(f2x[0] - g_f0x[0], f2y[0] - g_f0y[0]);
+                double m1 = hypot(f2x[1] - g_f0x[1], f2y[1] - g_f0y[1]);
+                double mm = m0 > m1 ? m0 : m1, dd = fabs(d - g_d0);
+                if (mm < 50) return;
+                if (dd > 0.5 * mm) { g_two_mode = 2; g_dstep = g_d0; logm("pinch: zoom"); }
+                else g_two_mode = 1;
+                g_moved = 1;
             }
             if (g_two_mode == 2) {
                 /* one zoom step per 15% change of the finger distance */
@@ -877,11 +941,20 @@ static void pad_frame(void)
         }
         {
             int ox, oy;
-            acc_x += dx * speed / 100.0;
-            acc_y += dy * speed / 100.0;
+            /* acceleration: raw units per ms (1 raw = 0.085 mm); slow moves
+               keep SPEED, faster moves get up to 1 + 2*ACCEL/100 times more */
+            long now = now_ms(), dt = now - g_last_t;
+            double v, gain = speed / 100.0;
+            if (dt < 5) dt = 5;
+            if (dt > 100) dt = 100;
+            v = hypot(dx, dy) / (double)dt;
+            if (accel && v > 0.3) gain *= 1 + accel / 100.0 * (v - 0.3 > 2 ? 2 : v - 0.3);
+            acc_x += dx * gain;
+            acc_y += dy * gain;
             ox = (int)acc_x; oy = (int)acc_y;
             acc_x -= ox; acc_y -= oy;
             if (ox || oy) send_rel(g_drag ? 1 : 0, ox, oy, 0, 0);
+            g_last_t = now;
         }
     }
 }
@@ -897,8 +970,8 @@ int main(int argc, char **argv)
     load_cfg();
     if (getenv("KOBOHID_PEN")) pen_mode = atoi(getenv("KOBOHID_PEN")) == 2 ? 2 : 1;
     rel_id = pen_mode == 2 ? 5 : 2;
-    logm("config: ORIENT=%d ORIENT_SET=%d SCREEN=%d:%d SPEED=%d FINGER=%d SCROLL=%d ZOOM=%d GRID=%d BUTTONS=%d PEN=%d",
-         orient, orient_set, aspect_w, aspect_h, speed, finger_ok, scroll_dir, zoom_mode, grid_mm, buttons_ok, pen_mode);
+    logm("config: ORIENT=%d ORIENT_SET=%d SCREEN=%d:%d SPEED=%d ACCEL=%d GESTURES=%d FINGER=%d SCROLL=%d ZOOM=%d GRID=%d BUTTONS=%d PEN=%d",
+         orient, orient_set, aspect_w, aspect_h, speed, accel, gestures_ok, finger_ok, scroll_dir, zoom_mode, grid_mm, buttons_ok, pen_mode);
     signal(SIGTERM, sig_stop);
     signal(SIGINT, sig_stop);
 
